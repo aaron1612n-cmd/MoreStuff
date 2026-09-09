@@ -77,13 +77,14 @@ local KICK_ANIM_ID = 111619765264257
 -- ═══ Local character state ═════════════════════════════════════════════════
 
 local Me = {
-    char      = nil,
-    humanoid  = nil,
-    root      = nil,
-    speedVal  = nil,
-    combat    = nil,
-    knocked   = nil,
-    baseSpeed = nil,
+    char       = nil,
+    humanoid   = nil,
+    root       = nil,
+    speedVal   = nil,
+    combat     = nil,
+    knocked    = nil,
+    stationary = nil,
+    baseSpeed  = nil,
 }
 
 local function inCombat()  return Me.combat  and Me.combat.Value  or false end
@@ -220,47 +221,16 @@ local function applySpeed()
     end
 end
 
--- ═══ WalkSpeed spoof + freeze intercept ══════════════════════════════════
--- __index: reads of Humanoid.WalkSpeed return base speed, not hacked value.
--- __newindex: writes that would set WalkSpeed below half base (the Stationary
---   freeze) are blocked and replaced with a deferred re-apply of our speed.
--- Both wrapped in one pcall — silently no-ops without getrawmetatable/setreadonly.
-pcall(function()
-    local mt = getrawmetatable(game)
-    setreadonly(mt, false)
-
-    local origIndex = mt.__index
-    mt.__index = newcclosure(function(self, key)
-        if key == "WalkSpeed" and Me.humanoid and rawequal(self, Me.humanoid) then
-            return Me.baseSpeed or origIndex(self, key)
-        end
-        return origIndex(self, key)
-    end)
-
-    local origNewIndex = mt.__newindex
-    mt.__newindex = newcclosure(function(self, key, value)
-        if key == "WalkSpeed" and Me.humanoid and rawequal(self, Me.humanoid) then
-            if Me.baseSpeed and value < Me.baseSpeed * 0.5 then
-                -- Game trying to freeze / slow us — block it and reapply our speed
-                task.defer(applySpeed)
-                return
-            end
-        end
-        return origNewIndex(self, key, value)
-    end)
-
-    setreadonly(mt, true)
-end)
-
 local function bindCharacter(char)
-    Me.char     = char
-    Me.humanoid = nil
-    Me.root     = nil
-    Me.speedVal = nil
-    Me.combat   = nil
-    Me.knocked  = nil
-    Me.baseSpeed = nil
-    Me.lastWrite = nil
+    Me.char       = char
+    Me.humanoid   = nil
+    Me.root       = nil
+    Me.speedVal   = nil
+    Me.combat     = nil
+    Me.knocked    = nil
+    Me.stationary = nil
+    Me.baseSpeed  = nil
+    Me.lastWrite  = nil
     Shield.actual  = false
     Shield.desired = false
 
@@ -274,8 +244,18 @@ local function bindCharacter(char)
 
         local pvpFolder = char:WaitForChild("Pvp", 10)
         if pvpFolder and Me.char == char then
-            Me.combat  = pvpFolder:FindFirstChild("CombatMode")
-            Me.knocked = pvpFolder:FindFirstChild("Knocked")
+            Me.combat     = pvpFolder:FindFirstChild("CombatMode")
+            Me.knocked    = pvpFolder:FindFirstChild("Knocked")
+            Me.stationary = pvpFolder:FindFirstChild("Stationary")
+            -- Server sets Stationary = true → game LocalScript zeros WalkSpeed.
+            -- We defer applySpeed so it runs after their handler and reclaims speed.
+            if Me.stationary then
+                Me.stationary.Changed:Connect(function(v)
+                    if v and Me.char == char then
+                        task.defer(applySpeed)
+                    end
+                end)
+            end
         end
 
         -- The game writes character.WalkSpeed (NumberValue) and a RenderStepped
