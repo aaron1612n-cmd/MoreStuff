@@ -1,9 +1,10 @@
 -- CIV CC PANEL
 -- LocalScript — place in StarterPlayerScripts
--- Civilization Survival: speed hack + fast auto block (animation detect) + auto kick
+-- Civilization Survival: speed hack + preemptive auto block + auto kick
 
 local Players    = game:GetService("Players")
 local RunService = game:GetService("RunService")
+local CoreGui    = game:GetService("CoreGui")
 local player     = Players.LocalPlayer
 local playerGui  = player:WaitForChild("PlayerGui")
 
@@ -19,8 +20,9 @@ local autoBlockOn     = false
 local autoKickOn      = false
 local blocking        = false
 local KICK_RANGE      = 14
+local BLOCK_RANGE     = 10  -- preemptive block radius (melee reach)
 
--- Attack animation IDs (from game dump) — fires at swing start, before damage lands
+-- Attack animation IDs — secondary trigger for enemies outside preemptive range
 local ATTACK_ANIMS = {
     [97045948973922]   = true, -- SwordAttack1
     [100810292084443]  = true, -- SwordAttack2
@@ -45,6 +47,21 @@ local function isInCombat()
     if not c then return false end
     local pvpFolder = c:FindFirstChild("Pvp")
     return pvpFolder and pvpFolder:FindFirstChild("CombatMode") and pvpFolder.CombatMode.Value
+end
+
+local function enemyInRange(range)
+    local root = getRoot()
+    if not root then return false end
+    for _, p in ipairs(Players:GetPlayers()) do
+        if p == player then continue end
+        local c = p.Character
+        if not c then continue end
+        local r = c:FindFirstChild("HumanoidRootPart")
+        if r and (r.Position - root.Position).Magnitude <= range then
+            return true
+        end
+    end
+    return false
 end
 
 -- ─── Speed ─────────────────────────────────────────────────────────────────
@@ -80,7 +97,6 @@ task.spawn(function()
 end)
 
 -- ─── Block ─────────────────────────────────────────────────────────────────
-local lastHit   = 0
 local unblockAt = 0
 
 local function doBlock(state)
@@ -89,22 +105,31 @@ local function doBlock(state)
     pcall(function() shieldRem:InvokeServer(state) end)
 end
 
-local function scheduleUnblock()
-    unblockAt = tick() + 0.6
+local function scheduleUnblock(delay)
+    unblockAt = tick() + (delay or 0.5)
 end
 
+-- Preemptive block loop: stay blocked while an enemy is within melee range in combat
 task.spawn(function()
     while task.wait(0.05) do
-        if autoBlockOn and blocking then
-            if tick() >= unblockAt then
-                doBlock(false)
-            end
+        if not autoBlockOn then
+            if blocking then doBlock(false) end
+            continue
+        end
+        if not isInCombat() then
+            if blocking then doBlock(false) end
+            continue
+        end
+        if enemyInRange(BLOCK_RANGE) then
+            doBlock(true)
+            scheduleUnblock(0.3)  -- short window after they leave range
+        elseif blocking and tick() >= unblockAt then
+            doBlock(false)
         end
     end
 end)
 
--- ─── Animation watcher ─────────────────────────────────────────────────────
--- Fires the moment an enemy starts their attack animation — before damage lands
+-- ─── Animation watcher — catches enemies just outside BLOCK_RANGE ───────────
 local animConns = {}
 
 local function watchPlayer(p)
@@ -113,9 +138,9 @@ local function watchPlayer(p)
 
     local function hookChar(char)
         if not char then return end
-        local animator = char:WaitForChild("Humanoid", 5)
-        if not animator then return end
-        local anim = animator:FindFirstChildOfClass("Animator") or animator:WaitForChild("Animator", 3)
+        local hum = char:WaitForChild("Humanoid", 5)
+        if not hum then return end
+        local anim = hum:FindFirstChildOfClass("Animator") or hum:WaitForChild("Animator", 3)
         if not anim then return end
 
         animConns[p] = anim.AnimationPlayed:Connect(function(track)
@@ -125,11 +150,10 @@ local function watchPlayer(p)
             local theirRoot = char:FindFirstChild("HumanoidRootPart")
             if not root or not theirRoot then return end
             if (theirRoot.Position - root.Position).Magnitude > KICK_RANGE + 4 then return end
-
             local id = tonumber(track.Animation.AnimationId:match("%d+$"))
             if id and ATTACK_ANIMS[id] then
                 doBlock(true)
-                scheduleUnblock()
+                scheduleUnblock(0.6)
             end
         end)
     end
@@ -138,23 +162,21 @@ local function watchPlayer(p)
     p.CharacterAdded:Connect(hookChar)
 end
 
--- Fallback: health-change catch for any hit that slipped through
+-- Fallback: HealthChanged for anything that slips through
 local healthConn
 local function hookHealth(char)
     if healthConn then healthConn:Disconnect() end
     local hum = char:WaitForChild("Humanoid")
     healthConn = hum.HealthChanged:Connect(function()
-        if not autoBlockOn then return end
-        if not isInCombat() then return end
+        if not autoBlockOn or not isInCombat() then return end
         doBlock(true)
-        scheduleUnblock()
+        scheduleUnblock(0.6)
     end)
 end
 
 player.CharacterAdded:Connect(hookHealth)
 if player.Character then task.spawn(function() hookHealth(player.Character) end) end
 
--- Watch all current + future players
 for _, p in ipairs(Players:GetPlayers()) do watchPlayer(p) end
 Players.PlayerAdded:Connect(watchPlayer)
 Players.PlayerRemoving:Connect(function(p)
@@ -187,13 +209,15 @@ end
 
 task.spawn(autoKickLoop)
 
--- ─── GUI ───────────────────────────────────────────────────────────────────
+-- ─── GUI — parented to CoreGui so game menus can't close it ────────────────
 local screen = Instance.new("ScreenGui")
 screen.Name           = "CivCCPanel"
 screen.ResetOnSpawn   = false
 screen.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
 screen.DisplayOrder   = 999
-screen.Parent         = playerGui
+
+local guiParented = pcall(function() screen.Parent = CoreGui end)
+if not guiParented then screen.Parent = playerGui end
 
 local frame = Instance.new("Frame")
 frame.Size             = UDim2.new(0, 240, 0, 240)
