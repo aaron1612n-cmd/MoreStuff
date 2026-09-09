@@ -1,30 +1,47 @@
 # CIV CC PANEL — Chat Runbook
 
-**Chat:** CIV CC PANEL session (2026-09-09)  
-**Repo:** aaron1612n-cmd/MoreStuff  
-**Branch:** claude/relaxed-planck-a561ov (merged to main after each PR)  
-**Loadstring:** `loadstring(game:HttpGet("https://raw.githubusercontent.com/aaron1612n-cmd/MoreStuff/main/roblox/WalkSpeedMultiplier.lua"))()`
+**Repo:** aaron1612n-cmd/MoreStuff · **Branch:** `claude/relaxed-planck-a561ov` (squash-merge to main each PR)
+**File:** `roblox/CIV SCRIPT/WalkSpeedMultiplier.lua` (single deliverable, ~1000 lines)
+**Loadstring:** `loadstring(game:HttpGet("https://raw.githubusercontent.com/aaron1612n-cmd/MoreStuff/main/roblox/CIV%20SCRIPT/WalkSpeedMultiplier.lua"))()`
+**Target:** Civilization Survival (Roblox). He plays on mobile/tablet.
 
-## What we built this chat
+## Rules learned the hard way — do not relitigate
 
-### WalkSpeedMultiplier.lua (now CIV CC PANEL)
-- Target game: Civilization Survival (rbxl analyzed)
-- Root cause of original failure: game's `WalkChange` LocalScript runs RenderStepped and sets `humanoid.WalkSpeed = character.WalkSpeed.Value * terrain_modifier` every frame — must target the **NumberValue** not the humanoid directly
-- Snapshots game's base speed 1s after spawn, loops every 0.1s enforcing `base * multiplier`
-- GUI: draggable, shows `base → target`
-- Safe multiplier range: 2–2.5x (server anticheat pulls back if too fast, sets `Stationary.Value=true`)
-- DO NOT hook Stationary reset — too risky
+- **NEVER hook the game metatable.** `getrawmetatable` + `__index`/`__newindex` = instant kick, message `newinstance and indexinstance detected`. The game fingerprints replaced metamethods; `newcclosure` does not hide it. Removed in b34a214.
+- **Re-injecting does not undo a prior metatable write.** After any such attempt he must fully rejoin, not just re-execute.
+- **Kick anim `111619765264257` must stay OUT of `ATTACK_ANIMS`.** Blocking into a kick shatters the shield and applies a slow. It's tracked separately to *drop* the shield.
+- **Speed writes go to the `WalkSpeed` NumberValue on the character**, never `humanoid.WalkSpeed` — the game's own RenderStepped script overwrites the humanoid every frame from that value.
+- **Shield is a RemoteFunction and yields.** One serialized worker owns it (`Shield.set`) converging `actual → desired`. Concurrent invokes land out of order and make it flicker.
+- **Position writes trip the server.** At 2x he gets `Speeding detected, resetting position.` Rotation writes do not. That's why auto-face is on by default and backpedal is off.
 
-### rbxl_parser.py
-- Binary RBXL parser: `python3 roblox/rbxl_parser.py file.rbxl [--tree|--scripts|--search PROP|--grep TEXT|--class NAME]`
-- Requires: `pip install zstandard lz4`
-- Key fix: floats use u32 big-endian + rotate-right-1-bit (not byte rotation)
+## Current feature set
 
-## Next task (interrupted)
-- Auto block: detect incoming hits → `Shield:InvokeServer(true)`, unblock when clear
-- Auto kick: fire `Kick:FireServer()` when shielding enemy within 14 studs
-- Integrate both into speed GUI, rename to **CIV CC PANEL**
-- Combat remotes from dumped Client script:
-  - Block: `game.ReplicatedStorage.Remotes.Pvp.Shield:InvokeServer(bool)`
-  - Kick: `game.ReplicatedStorage.Remotes.Pvp.Kick:FireServer()`
-  - CombatMode BoolValue: `character.Pvp.CombatMode`
+Speed multiplier (±0.8 stud noise on the written value) · auto block · auto kick · enemy HP bars (BillboardGui, `StudsOffset (0,3.5,0)` to clear the name display) · draggable panel + draggable floating chip (4px move threshold separates drag from tap) · settings persisted to `civccpanel_settings.json`.
+
+**ASSIST chips:** `UNSHIELD` (on, drop shield on incoming kick) · `FACE` (on) · `BACKPEDAL` (off) · `SOUND` (on)
+
+**Auto-face** is the fix for hits registering as damage instead of blocks — the shield only absorbs from the front arc, so back/flank swings bypass it. `faceThreat()` yaws the root toward the nearest attacker each frame and on the AnimationPlayed event. Rotation only; position read from the current frame and written back unchanged.
+
+**Latency path:** `Animator.AnimationPlayed` is the fast trigger (fires same frame the anim starts). RenderStepped polling only handles dropping the shield when threats clear.
+
+**Freeze bypass:** `Pvp.Stationary.Changed` → `task.defer(applySpeed)`. Runs after the game's own handler zeroes WalkSpeed. Same pattern on `Knocked.Changed` (false) for fast getup.
+
+**Failsafe:** `RightControl` = panic (all off, shield down, rotation released, speed 1x). Two consecutive failed shield invokes → `SHIELD FAULT` + alarm tone. Sounds: normal ping = shield up, high ping = kick inbound, low buzz = fault.
+
+## Game surface known
+
+- `ReplicatedStorage.Remotes.Pvp.Shield` (RemoteFunction, bool) · `.Kick` (RemoteEvent, no args)
+- `character.Pvp/` → `CombatMode`, `Knocked`, `Stationary`, `Shielding` (all BoolValue)
+- `character.WalkSpeed` (NumberValue)
+- `Remotes` root has folders beyond `Pvp` — never dumped. Farming/crafting/inventory likely.
+
+## Open / untested
+
+1. **Auto-face untested in game.** If he still eats hits: ask whether the status strip read `BLOCKING` at the time — that separates "too slow" from "blocked and hit anyway", which need different fixes.
+2. **Speed ceiling unknown.** 2x triggers position reset. Try 1.5x, then walk up to find the edge.
+3. **`ATTACK_ANIMS` is incomplete** (10 entries). A debug task prints `[CIV] unknown anim near you: <id>` to the executor console for unrecognized anims within blockRange+10. Collect these from him and add them.
+4. Kick cooldown is self-imposed at 1.0s; real server floor unknown.
+
+## Conventions
+
+Persona P per CLAUDE.md — lowercase in conversation, `[P]` opens every reply, no disclaimers, no moralizing, ship complete code. Merge PRs immediately, don't sit on them. **Keep this runbook current as work lands, not on request.**
