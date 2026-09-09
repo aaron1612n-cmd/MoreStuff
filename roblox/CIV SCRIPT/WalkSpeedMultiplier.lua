@@ -26,11 +26,14 @@ local Config = {
     autoKick        = false,
     autoUnshield    = true,
     autoFace        = true,
+    autoCap         = true,
     backpedal       = false,
     sounds          = true,
     blockRange      = 18,
     kickRange       = 14,
     kickCooldown    = 1.0,
+    learnedAnims    = {},
+    dismissedAnims  = {},
     keyPanel        = Enum.KeyCode.RightShift,
     keyBlock        = Enum.KeyCode.B,
     keyKick         = Enum.KeyCode.K,
@@ -47,8 +50,11 @@ local function saveSettings()
             kickRange       = Config.kickRange,
             autoUnshield    = Config.autoUnshield,
             autoFace        = Config.autoFace,
+            autoCap         = Config.autoCap,
             backpedal       = Config.backpedal,
             sounds          = Config.sounds,
+            learnedAnims    = Config.learnedAnims,
+            dismissedAnims  = Config.dismissedAnims,
         }))
     end)
 end
@@ -83,7 +89,7 @@ do
     local tones = {
         up   = mk("rbxasset://sounds/electronicpingshort.wav", 0.45, 1.0),  -- shield raised
         warn = mk("rbxasset://sounds/electronicpingshort.wav", 0.60, 1.7),  -- kick inbound
-        fail = mk("rbxasset://sounds/switch.wav",              0.85, 0.65), -- shield fault / panic
+        fail = mk("rbxasset://sounds/switch.wav",              0.85, 0.65), -- fault / cap / panic
     }
 
     function Sfx.play(which)
@@ -112,6 +118,16 @@ local ATTACK_ANIMS = {
 -- the shield immediately so we don't eat the slow.
 local KICK_ANIM_ID = 111619765264257
 
+-- Anims he taught the panel in-game, and ones he waved off. Both persist, so a
+-- rejoin doesn't re-ask about the same idle loop.
+local DISMISSED = {}
+for _, id in ipairs(Config.learnedAnims)   do ATTACK_ANIMS[id] = true end
+for _, id in ipairs(Config.dismissedAnims) do DISMISSED[id]    = true end
+
+local pendingAnims   = {}   -- unknown ids awaiting a verdict, newest first, max 3
+local offeredAnims   = {}   -- [id] = true, already sitting in the queue
+local refreshAnimRows       -- assigned once the GUI exists
+
 -- ═══ Local character state ═════════════════════════════════════════════════
 
 local Me = {
@@ -132,22 +148,38 @@ local function alive()     return Me.humanoid and Me.humanoid.Health > 0 end
 -- ═══ Facing ════════════════════════════════════════════════════════════════
 -- The shield only absorbs from the front arc. A swing that connects with our
 -- back or flank bypasses it entirely, which is why blocks "register" as damage.
--- Rotation-only: position is read from the current frame and written back
--- unchanged, so nothing here produces displacement for the server to reject.
+-- Rotation-only: the position component is carried through untouched, so
+-- nothing here produces displacement for the server to reject.
+--
+-- Turn rate is capped rather than snapped. Two reasons: an instant 180 is the
+-- single most obvious tell to anyone watching, and a snap rewrites the CFrame
+-- every frame even when we are already on target. Below the deadzone we write
+-- nothing at all.
 
+local TURN_RATE  = math.rad(900)   -- radians/sec ceiling
+local FACE_DEAD  = 0.02            -- ~1.1 deg, close enough to skip the write
 local rotationHeld = false
 
-local function faceThreat(root)
+local function faceThreat(root, budget)
     if not (Me.root and Me.humanoid and root and root.Parent) then return end
     local myPos = Me.root.Position
     local tp    = root.Position
-    local flat  = Vector3.new(tp.X, myPos.Y, tp.Z)   -- yaw only, no pitch
-    if (flat - myPos).Magnitude < 0.1 then return end
+    local dx, dz = tp.X - myPos.X, tp.Z - myPos.Z
+    if dx * dx + dz * dz < 0.01 then return end
+
+    -- Roblox forward is -Z, so a pure yaw t has LookVector (-sin t, 0, -cos t)
+    local want = math.atan2(-dx, -dz)
+    local _, cur = Me.root.CFrame:ToEulerAnglesYXZ()
+    local delta = (want - cur + math.pi) % (math.pi * 2) - math.pi
+    if math.abs(delta) < FACE_DEAD then return end
+
     if not rotationHeld then
         Me.humanoid.AutoRotate = false
         rotationHeld = true
     end
-    Me.root.CFrame = CFrame.lookAt(myPos, flat)
+    local cap  = TURN_RATE * budget
+    local step = math.clamp(delta, -cap, cap)
+    Me.root.CFrame = CFrame.new(myPos) * CFrame.fromEulerAnglesYXZ(0, cur + step, 0)
 end
 
 local function releaseRotation()
@@ -161,18 +193,25 @@ end
 -- places lets calls overlap and land out of order, which is what made the
 -- shield flicker. One worker owns the remote and converges actual -> desired.
 
-local Shield = { desired = false, actual = false, busy = false, faulted = false }
+-- `gen` retires workers across a respawn. An InvokeServer that never returns
+-- would otherwise hold `busy` forever, and clearing `busy` on its own would let
+-- a second worker start alongside the parked one — which is the overlap that
+-- made the shield flicker in the first place.
+local Shield = { desired = false, actual = false, busy = false, faulted = false, since = 0, gen = 0 }
 
 function Shield.set(state)
     Shield.desired = state
     if Shield.busy or Shield.actual == Shield.desired then return end
     Shield.busy = true
+    local myGen = Shield.gen
     task.spawn(function()
         local fails = 0
-        while Shield.actual ~= Shield.desired do
+        while Shield.gen == myGen and Shield.actual ~= Shield.desired do
             local target = Shield.desired
             local sent   = tick()
+            Shield.since = sent
             local ok = pcall(function() shieldRem:InvokeServer(target) end)
+            if Shield.gen ~= myGen then return end
             if ok then
                 Shield.actual  = target
                 Shield.faulted = false
@@ -181,21 +220,18 @@ function Shield.set(state)
                 if target and tick() - sent < 0.25 then Sfx.play("up") end
             else
                 fails += 1
-                if fails == 2 then
-                    Shield.faulted = true
-                    Sfx.play("fail")
-                end
+                if fails == 2 then Shield.faulted = true end
                 task.wait(0.1)
             end
         end
-        Shield.busy = false
+        if Shield.gen == myGen then Shield.busy = false end
     end)
 end
 
 -- ═══ Enemy animator registry ═══════════════════════════════════════════════
 -- Rebuilt on spawn rather than searched every frame.
 
-local Enemies = {}          -- [Player] = { char, root, animator, shielding, humanoid, hpFill }
+local Enemies = {}          -- [Player] = { char, root, animator, shielding, humanoid, hpFill, attacks, kicks }
 local trackCache = setmetatable({}, { __mode = "k" })  -- [AnimationTrack] = trackId
 
 local function getTrackId(track)
@@ -207,15 +243,6 @@ local function getTrackId(track)
     end)
     trackCache[track] = id
     return id
-end
-
-local function isAttackTrack(track)
-    local id = getTrackId(track)
-    return id ~= 0 and ATTACK_ANIMS[id] == true
-end
-
-local function isKickTrack(track)
-    return getTrackId(track) == KICK_ANIM_ID
 end
 
 local function makeHPBar(char)
@@ -248,9 +275,31 @@ local function makeHPBar(char)
     return fill
 end
 
+-- An anim worth asking about is short and one-shot. Idles, walks and runs are
+-- looped, which is what kept the old console dump drowning in noise.
+local function isCandidate(track, id)
+    if id == 0 or ATTACK_ANIMS[id] or id == KICK_ANIM_ID then return false end
+    if DISMISSED[id] or offeredAnims[id] then return false end
+    local ok, looped = pcall(function() return track.Looped end)
+    if not ok or looped then return false end
+    local okLen, len = pcall(function() return track.Length end)
+    return okLen and len < 2.5
+end
+
+local function offerAnim(id)
+    offeredAnims[id] = true
+    table.insert(pendingAnims, 1, id)
+    pendingAnims[4] = nil
+    if refreshAnimRows then refreshAnimRows() end
+end
+
+-- Attack tracks carry an expiry as a backstop: Stopped normally clears them,
+-- but a character torn down mid-swing never fires it.
+local TRACK_TTL = 3
+
 local function bindEnemyChar(p, char)
     if not char then return end
-    local entry = { char = char }
+    local entry = { char = char, attacks = {}, kicks = {} }
     Enemies[p] = entry
 
     task.spawn(function()
@@ -264,23 +313,53 @@ local function bindEnemyChar(p, char)
             entry.shielding = pvpFolder:FindFirstChild("Shielding")
         end
         entry.hpFill = makeHPBar(char)
+        if not entry.animator then return end
 
-        -- Event-driven fast path: AnimationPlayed fires in the same frame the
-        -- anim starts, before the next RenderStepped poll would catch it.
-        if entry.animator then
-            entry.animConn = entry.animator.AnimationPlayed:Connect(function(track)
-                if not Config.autoBlock or not alive() or isKnocked() then return end
-                if not (entry.root and Me.root) then return end
-                local dist = (entry.root.Position - Me.root.Position).Magnitude
-                if isAttackTrack(track) and dist <= Config.blockRange then
-                    if Config.autoFace then faceThreat(entry.root) end
-                    Shield.set(true)
-                elseif isKickTrack(track) and dist <= Config.kickRange + 4 then
-                    Sfx.play("warn")
-                    if Config.autoUnshield and Shield.actual then Shield.set(false) end
-                end
-            end)
+        -- Anything already mid-swing when we bind never fires AnimationPlayed
+        -- for us, so seed the set once here.
+        local ok, tracks = pcall(entry.animator.GetPlayingAnimationTracks, entry.animator)
+        if ok then
+            for _, track in ipairs(tracks) do
+                local id = getTrackId(track)
+                if ATTACK_ANIMS[id] then entry.attacks[track] = tick() + TRACK_TTL end
+            end
         end
+
+        -- AnimationPlayed fires in the same frame the anim starts, and Stopped
+        -- fires the frame it ends. Both edges are events, so the frame loop
+        -- never has to ask the animator what is playing.
+        entry.animConn = entry.animator.AnimationPlayed:Connect(function(track)
+            local id = getTrackId(track)
+            local isAttack = ATTACK_ANIMS[id] == true
+            local isKick   = id == KICK_ANIM_ID
+
+            if isAttack then
+                entry.attacks[track] = tick() + TRACK_TTL
+                track.Stopped:Once(function() entry.attacks[track] = nil end)
+            elseif isKick then
+                entry.kicks[track] = tick() + TRACK_TTL
+                track.Stopped:Once(function() entry.kicks[track] = nil end)
+            end
+
+            if not (entry.root and Me.root) then return end
+            local dist = (entry.root.Position - Me.root.Position).Magnitude
+
+            if not (isAttack or isKick) then
+                if dist <= Config.blockRange + 10 and isCandidate(track, id) then
+                    offerAnim(id)
+                end
+                return
+            end
+
+            if not Config.autoBlock or not alive() or isKnocked() then return end
+            if isAttack and dist <= Config.blockRange then
+                if Config.autoFace then faceThreat(entry.root, 0.12) end
+                Shield.set(true)
+            elseif isKick and dist <= Config.kickRange + 4 then
+                Sfx.play("warn")
+                if Config.autoUnshield and Shield.actual then Shield.set(false) end
+            end
+        end)
     end)
 end
 
@@ -297,11 +376,21 @@ end
 
 for _, p in ipairs(Players:GetPlayers()) do trackPlayer(p) end
 Players.PlayerAdded:Connect(trackPlayer)
-Players.PlayerRemoving:Connect(function(p) Enemies[p] = nil end)
+Players.PlayerRemoving:Connect(function(p)
+    local e = Enemies[p]
+    if e and e.animConn then e.animConn:Disconnect() end
+    Enemies[p] = nil
+end)
 
 -- ═══ Local character binding ═══════════════════════════════════════════════
 
 local speedConn
+
+-- Position-yank guard. The server answers an over-speed with
+-- `Speeding detected, resetting position.` — a hard horizontal snap we did not
+-- ask for. Two of those inside ten seconds and the multiplier walks itself
+-- down, which is how the real ceiling gets found without guessing at it.
+local Guard = { last = nil, hits = {}, cappedAt = 0, graceUntil = 0 }
 
 local function applySpeed()
     if not Me.baseSpeed then return end
@@ -318,6 +407,21 @@ local function applySpeed()
     end
 end
 
+local speedBox   -- forward declared: the guard rewrites the field on a throttle
+
+local function throttleSpeed()
+    local next = math.max(1, math.floor((Config.speedMultiplier - 0.1) * 10 + 0.5) / 10)
+    if next == Config.speedMultiplier then return end
+    Config.speedMultiplier = next
+    if speedBox then speedBox.Text = tostring(next) end
+    Guard.cappedAt = tick()
+    Guard.graceUntil = tick() + 3
+    table.clear(Guard.hits)
+    applySpeed()
+    saveSettings()
+    Sfx.play("fail")
+end
+
 local function bindCharacter(char)
     Me.char       = char
     Me.humanoid   = nil
@@ -331,7 +435,13 @@ local function bindCharacter(char)
     Shield.actual  = false
     Shield.desired = false
     Shield.faulted = false
+    Shield.gen    += 1       -- retires any worker still parked on the old character
+    Shield.busy    = false
     rotationHeld   = false   -- new humanoid, old AutoRotate lock is meaningless
+
+    Guard.last       = nil
+    Guard.graceUntil = tick() + 4   -- spawn drop and load-in teleports are not yanks
+    table.clear(Guard.hits)
 
     if speedConn then speedConn:Disconnect(); speedConn = nil end
 
@@ -386,15 +496,44 @@ task.spawn(function()
     while task.wait(0.25) do applySpeed() end
 end)
 
+RunService.Heartbeat:Connect(function(dt)
+    local root = Me.root
+    if not (root and root.Parent and alive()) or isKnocked() then
+        Guard.last = nil
+        return
+    end
+    local pos  = root.Position
+    local prev = Guard.last
+    Guard.last = pos
+    if not prev or tick() < Guard.graceUntil then return end
+    if not Config.autoCap or Config.speedMultiplier <= 1 then return end
+
+    local d     = pos - prev
+    local horiz = Vector3.new(d.X, 0, d.Z).Magnitude
+    -- A correction is horizontal and far past anything our speed could cover.
+    -- Falls and jumps are vertical-dominant, so they never qualify.
+    local budget = (Me.speedVal and Me.speedVal.Value or 16) * dt + 8
+    if horiz <= budget or horiz <= math.abs(d.Y) * 1.5 then return end
+
+    local now = tick()
+    local kept = {}
+    for _, t in ipairs(Guard.hits) do
+        if now - t < 10 then kept[#kept + 1] = t end
+    end
+    kept[#kept + 1] = now
+    Guard.hits = kept
+    if #kept >= 2 then throttleSpeed() end
+end)
+
 -- ═══ Auto block ════════════════════════════════════════════════════════════
--- Runs on RenderStepped. Every frame the desired shield state is derived from
--- scratch: is any enemy in range mid-attack-animation. Nothing accumulates, so
--- there is no counter to drift out of sync.
+-- Runs on RenderStepped over the live attack sets maintained by the animator
+-- events. Desired shield state is derived from scratch every frame, so nothing
+-- accumulates and there is no counter to drift out of sync.
 
 local threatCount = 0
 local threatRoot  = nil   -- root of the closest enemy currently mid-attack
 
-RunService.RenderStepped:Connect(function()
+RunService.RenderStepped:Connect(function(dt)
     if not Config.autoBlock or not alive() or isKnocked() or not Me.root then
         threatCount = 0
         threatRoot  = nil
@@ -404,28 +543,37 @@ RunService.RenderStepped:Connect(function()
     end
 
     local myPos = Me.root.Position
+    local now   = tick()
     local threats = 0
     local nearest, nearestDist = nil, math.huge
     local incomingKick, kickRoot = false, nil
 
-    for p, e in pairs(Enemies) do
-        local root, animator = e.root, e.animator
-        if root and animator and root.Parent then
+    for _, e in pairs(Enemies) do
+        local root = e.root
+        if root and root.Parent then
             local dist = (root.Position - myPos).Magnitude
+
             if dist <= Config.blockRange then
-                local ok, tracks = pcall(animator.GetPlayingAnimationTracks, animator)
-                if ok then
-                    for _, track in ipairs(tracks) do
-                        if track.IsPlaying then
-                            if isAttackTrack(track) then
-                                threats += 1
-                                if dist < nearestDist then
-                                    nearest, nearestDist = root, dist
-                                end
-                            elseif isKickTrack(track) and dist <= Config.kickRange + 4 then
-                                incomingKick, kickRoot = true, root
-                            end
-                        end
+                local hot = false
+                for track, expiry in pairs(e.attacks) do
+                    if now > expiry or not track.IsPlaying then
+                        e.attacks[track] = nil
+                    else
+                        hot = true
+                    end
+                end
+                if hot then
+                    threats += 1
+                    if dist < nearestDist then nearest, nearestDist = root, dist end
+                end
+            end
+
+            if dist <= Config.kickRange + 4 then
+                for track, expiry in pairs(e.kicks) do
+                    if now > expiry or not track.IsPlaying then
+                        e.kicks[track] = nil
+                    else
+                        incomingKick, kickRoot = true, root
                     end
                 end
             end
@@ -438,7 +586,7 @@ RunService.RenderStepped:Connect(function()
     -- Turn into whatever is threatening us, kick included — facing a kicker is
     -- still better than eating it sideways.
     if Config.autoFace and threatRoot then
-        faceThreat(threatRoot)
+        faceThreat(threatRoot, dt)
     else
         releaseRotation()
     end
@@ -460,32 +608,6 @@ RunService.Heartbeat:Connect(function()
     away = Vector3.new(away.X, 0, away.Z)
     if away.Magnitude < 0.1 then return end
     Me.humanoid:Move(away.Unit, false)
-end)
-
--- Debug: print unrecognized anim IDs from nearby enemies (remove once anim table is complete)
-local _debugLastPrint = 0
-task.spawn(function()
-    while task.wait(1) do
-        if not Config.autoBlock or not Me.root then continue end
-        local t = tick()
-        if t - _debugLastPrint < 3 then continue end
-        local myPos = Me.root.Position
-        for _, e in pairs(Enemies) do
-            if not (e.root and e.animator and e.root.Parent) then continue end
-            if (e.root.Position - myPos).Magnitude > Config.blockRange + 10 then continue end
-            local ok, tracks = pcall(e.animator.GetPlayingAnimationTracks, e.animator)
-            if not ok then continue end
-            for _, track in ipairs(tracks) do
-                if track.IsPlaying then
-                    local id = getTrackId(track)
-                    if id ~= 0 and not ATTACK_ANIMS[id] and id ~= KICK_ANIM_ID then
-                        print("[CIV] unknown anim near you:", id)
-                        _debugLastPrint = t
-                    end
-                end
-            end
-        end
-    end
 end)
 
 -- ═══ Auto kick ═════════════════════════════════════════════════════════════
@@ -600,7 +722,7 @@ local verLabel = Instance.new("TextLabel")
 verLabel.Size                   = UDim2.fromOffset(28, 14)
 verLabel.Position               = UDim2.new(1, -36, 0.5, -7)
 verLabel.BackgroundTransparency = 1
-verLabel.Text                   = "v3"
+verLabel.Text                   = "v4"
 verLabel.TextColor3             = COL.dim
 verLabel.Font                   = Enum.Font.GothamBold
 verLabel.TextSize               = 10
@@ -608,12 +730,28 @@ verLabel.TextXAlignment         = Enum.TextXAlignment.Right
 verLabel.Parent                 = titleBar
 
 -- Body --------------------------------------------------------------------
--- Offset by 3px on left to clear the accent stripe
-local body = Instance.new("Frame")
-body.Size                 = UDim2.new(1, -3, 1, -38)
-body.Position             = UDim2.fromOffset(3, 38)
+-- Scrolls, so sections can grow without the panel outgrowing a tablet screen.
+-- Offset by 3px on the left to clear the accent stripe; the status strip lives
+-- outside it, pinned to the bottom, so it never scrolls out of view.
+local body = Instance.new("ScrollingFrame")
+body.Size                   = UDim2.new(1, -3, 1, -84)
+body.Position               = UDim2.fromOffset(3, 38)
 body.BackgroundTransparency = 1
-body.Parent               = frame
+body.BorderSizePixel        = 0
+body.ScrollBarThickness     = 3
+body.ScrollBarImageColor3   = COL.line
+body.ScrollingDirection     = Enum.ScrollingDirection.Y
+body.CanvasSize             = UDim2.fromOffset(0, 0)
+body.Parent                 = frame
+
+-- Vertical layout cursor. Sections claim their height as they are built, so
+-- inserting one does not mean renumbering everything below it.
+local Y = 10
+local function at(advance)
+    local y = Y
+    Y = Y + advance
+    return y
+end
 
 local function sectionLabel(text, y)
     local bar = Instance.new("Frame")
@@ -647,11 +785,11 @@ local function divider(y)
 end
 
 -- Speed -------------------------------------------------------------------
-sectionLabel("MOVEMENT", 10)
+sectionLabel("MOVEMENT", at(16))
 
 local speedRead = Instance.new("TextLabel")
 speedRead.Size                   = UDim2.new(1, -20, 0, 14)
-speedRead.Position               = UDim2.fromOffset(9, 26)
+speedRead.Position               = UDim2.fromOffset(9, at(18))
 speedRead.BackgroundTransparency = 1
 speedRead.Text                   = "detecting base speed..."
 speedRead.TextColor3             = COL.dim
@@ -660,9 +798,11 @@ speedRead.TextSize               = 11
 speedRead.TextXAlignment         = Enum.TextXAlignment.Left
 speedRead.Parent                 = body
 
-local speedBox = Instance.new("TextBox")
+local speedRowY = at(42)
+
+speedBox = Instance.new("TextBox")
 speedBox.Size              = UDim2.new(1, -82, 0, 30)
-speedBox.Position          = UDim2.fromOffset(9, 44)
+speedBox.Position          = UDim2.fromOffset(9, speedRowY)
 speedBox.BackgroundColor3  = COL.field
 speedBox.BorderSizePixel   = 1
 speedBox.BorderColor3      = COL.line
@@ -676,7 +816,7 @@ speedBox.Parent            = body
 
 local applyBtn = Instance.new("TextButton")
 applyBtn.Size             = UDim2.fromOffset(64, 30)
-applyBtn.Position         = UDim2.new(1, -73, 0, 44)
+applyBtn.Position         = UDim2.new(1, -73, 0, speedRowY)
 applyBtn.BackgroundColor3 = COL.accent
 applyBtn.BorderSizePixel  = 0
 applyBtn.Text             = "SET"
@@ -690,6 +830,9 @@ local function commitSpeed()
     local v = tonumber(speedBox.Text)
     if v and v > 0 and v <= 20 then
         Config.speedMultiplier = v
+        -- A deliberate change resets the guard: this is the value under test now
+        table.clear(Guard.hits)
+        Guard.graceUntil = tick() + 2
         applySpeed()
         saveSettings()
         applyBtn.Text = "OK"
@@ -703,10 +846,10 @@ end
 applyBtn.MouseButton1Click:Connect(commitSpeed)
 speedBox.FocusLost:Connect(function(enter) if enter then commitSpeed() end end)
 
-divider(86)
+divider(at(10))
 
 -- Combat ------------------------------------------------------------------
-sectionLabel("COMBAT", 96)
+sectionLabel("COMBAT", at(18))
 
 local toggles  = {}   -- [KeyCode] = flip fn
 local renderers = {}  -- every toggle's render fn, replayed after a panic
@@ -831,7 +974,7 @@ local function makeChip(name, x, y, w, get, set)
     return btn
 end
 
-makeToggle("Auto Block", Config.keyBlock, 114,
+makeToggle("Auto Block", Config.keyBlock, at(36),
     function() return Config.autoBlock end,
     function(v)
         Config.autoBlock = v
@@ -842,39 +985,193 @@ makeToggle("Auto Block", Config.keyBlock, 114,
         end
     end)
 
-makeToggle("Auto Kick", Config.keyKick, 150,
+makeToggle("Auto Kick", Config.keyKick, at(44),
     function() return Config.autoKick end,
     function(v) Config.autoKick = v end)
 
-divider(194)
+divider(at(10))
 
 -- Assist ------------------------------------------------------------------
-sectionLabel("ASSIST", 204)
+sectionLabel("ASSIST", at(18))
 
-local CHIP_W = 114
-makeChip("UNSHIELD", 9, 222, CHIP_W,
+local CHIP_W, CHIP_X2 = 114, 129
+
+local assistRow1 = at(36)
+makeChip("UNSHIELD", 9, assistRow1, CHIP_W,
     function() return Config.autoUnshield end,
     function(v) Config.autoUnshield = v end)
 
-makeChip("FACE", 129, 222, CHIP_W,
+makeChip("FACE", CHIP_X2, assistRow1, CHIP_W,
     function() return Config.autoFace end,
     function(v)
         Config.autoFace = v
         if not v then releaseRotation() end
     end)
 
-makeChip("BACKPEDAL", 9, 258, CHIP_W,
+local assistRow2 = at(36)
+makeChip("BACKPEDAL", 9, assistRow2, CHIP_W,
     function() return Config.backpedal end,
     function(v) Config.backpedal = v end)
 
-makeChip("SOUND", 129, 258, CHIP_W,
+makeChip("SOUND", CHIP_X2, assistRow2, CHIP_W,
     function() return Config.sounds end,
     function(v) Config.sounds = v end)
 
-divider(300)
+local assistRow3 = at(44)
+makeChip("AUTOCAP", 9, assistRow3, CHIP_W,
+    function() return Config.autoCap end,
+    function(v)
+        Config.autoCap = v
+        table.clear(Guard.hits)
+    end)
+
+divider(at(10))
+
+-- Anim learning -----------------------------------------------------------
+-- The attack table shipped incomplete and every missing ID is a swing that
+-- does not raise the shield. Unrecognised one-shot anims from nearby players
+-- surface here instead of the executor console, which is unreadable on a
+-- tablet mid-fight. ADD folds the ID into the attack set and persists it.
+
+local animHeaderY = at(18)
+sectionLabel("ANIM LEARN", animHeaderY)
+
+local animReset = Instance.new("TextButton")
+animReset.Size             = UDim2.new(0, 44, 0, 14)
+animReset.Position         = UDim2.new(1, -53, 0, animHeaderY)
+animReset.BackgroundColor3 = COL.bg
+animReset.BorderSizePixel  = 1
+animReset.BorderColor3     = COL.line
+animReset.Text             = "RESET"
+animReset.TextColor3       = COL.dim
+animReset.Font             = Enum.Font.GothamBold
+animReset.TextSize         = 9
+animReset.AutoButtonColor  = false
+animReset.Parent           = body
+
+local animEmpty = Instance.new("TextLabel")
+animEmpty.Size                   = UDim2.new(1, -22, 0, 24)
+animEmpty.Position               = UDim2.fromOffset(9, Y)
+animEmpty.BackgroundTransparency = 1
+animEmpty.Text                   = "watching for unknown swings..."
+animEmpty.TextColor3             = COL.dim
+animEmpty.Font                   = Enum.Font.Gotham
+animEmpty.TextSize               = 11
+animEmpty.TextXAlignment         = Enum.TextXAlignment.Left
+animEmpty.Parent                 = body
+
+local function learnAnim(id)
+    ATTACK_ANIMS[id] = true
+    Config.learnedAnims[#Config.learnedAnims + 1] = id
+    saveSettings()
+end
+
+local function dismissAnim(id)
+    DISMISSED[id] = true
+    Config.dismissedAnims[#Config.dismissedAnims + 1] = id
+    saveSettings()
+end
+
+local function dropPending(id)
+    for i, v in ipairs(pendingAnims) do
+        if v == id then
+            table.remove(pendingAnims, i)
+            break
+        end
+    end
+    refreshAnimRows()
+end
+
+local animRows = {}
+for i = 1, 3 do
+    local row = Instance.new("Frame")
+    row.Size             = UDim2.new(1, -22, 0, 24)
+    row.Position         = UDim2.fromOffset(9, at(27))
+    row.BackgroundColor3 = COL.field
+    row.BorderSizePixel  = 1
+    row.BorderColor3     = COL.line
+    row.Visible          = false
+    row.Parent           = body
+
+    local idLbl = Instance.new("TextLabel")
+    idLbl.Size                   = UDim2.new(1, -92, 1, 0)
+    idLbl.Position               = UDim2.fromOffset(8, 0)
+    idLbl.BackgroundTransparency = 1
+    idLbl.TextColor3             = COL.text
+    idLbl.Font                   = Enum.Font.Gotham
+    idLbl.TextSize               = 10
+    idLbl.TextXAlignment         = Enum.TextXAlignment.Left
+    idLbl.Parent                 = row
+
+    local add = Instance.new("TextButton")
+    add.Size             = UDim2.new(0, 42, 0, 18)
+    add.Position         = UDim2.new(1, -70, 0.5, -9)
+    add.BackgroundColor3 = COL.accent
+    add.BorderSizePixel  = 0
+    add.Text             = "ADD"
+    add.TextColor3       = COL.bg
+    add.Font             = Enum.Font.GothamBold
+    add.TextSize         = 9
+    add.AutoButtonColor  = false
+    add.Parent           = row
+
+    local skip = Instance.new("TextButton")
+    skip.Size             = UDim2.new(0, 20, 0, 18)
+    skip.Position         = UDim2.new(1, -24, 0.5, -9)
+    skip.BackgroundColor3 = COL.bg
+    skip.BorderSizePixel  = 1
+    skip.BorderColor3     = COL.line
+    skip.Text             = "X"
+    skip.TextColor3       = COL.dim
+    skip.Font             = Enum.Font.GothamBold
+    skip.TextSize         = 9
+    skip.AutoButtonColor  = false
+    skip.Parent           = row
+
+    local slot = { row = row, idLbl = idLbl, id = nil }
+    add.MouseButton1Click:Connect(function()
+        if not slot.id then return end
+        learnAnim(slot.id)
+        Sfx.play("up")
+        dropPending(slot.id)
+    end)
+    skip.MouseButton1Click:Connect(function()
+        if not slot.id then return end
+        dismissAnim(slot.id)
+        dropPending(slot.id)
+    end)
+    animRows[i] = slot
+end
+
+function refreshAnimRows()
+    for i, slot in ipairs(animRows) do
+        local id = pendingAnims[i]
+        slot.id = id
+        slot.row.Visible = id ~= nil
+        if id then slot.idLbl.Text = tostring(id) end
+    end
+    animEmpty.Visible = #pendingAnims == 0
+end
+
+animReset.MouseButton1Click:Connect(function()
+    for _, id in ipairs(Config.learnedAnims) do ATTACK_ANIMS[id] = nil end
+    table.clear(Config.learnedAnims)
+    table.clear(Config.dismissedAnims)
+    table.clear(DISMISSED)
+    table.clear(offeredAnims)
+    table.clear(pendingAnims)
+    refreshAnimRows()
+    saveSettings()
+    animReset.Text = "CLEAR"
+    task.delay(0.8, function() animReset.Text = "RESET" end)
+end)
+
+refreshAnimRows()
+
+divider(at(10))
 
 -- Tuning ------------------------------------------------------------------
-sectionLabel("TUNING", 310)
+sectionLabel("TUNING", at(18))
 
 -- Sliders -----------------------------------------------------------------
 local function makeSlider(name, y, minV, maxV, getV, setV)
@@ -890,7 +1187,7 @@ local function makeSlider(name, y, minV, maxV, getV, setV)
     lbl.Parent                 = body
 
     local rail = Instance.new("Frame")
-    rail.Size             = UDim2.new(1, -18, 0, 8)
+    rail.Size             = UDim2.new(1, -22, 0, 8)
     rail.Position         = UDim2.fromOffset(9, y + 18)
     rail.BackgroundColor3 = COL.field
     rail.BorderSizePixel  = 1
@@ -909,55 +1206,58 @@ local function makeSlider(name, y, minV, maxV, getV, setV)
         lbl.Text  = name .. ": " .. getV()
     end
 
-    local dragging = false
     local function apply(x)
         local a = math.clamp((x - rail.AbsolutePosition.X) / rail.AbsoluteSize.X, 0, 1)
         setV(math.floor(minV + a * (maxV - minV) + 0.5))
         render()
     end
 
+    -- Drag is scoped to the input that started it rather than a global
+    -- InputChanged listener per slider, so nothing keeps firing once the panel
+    -- is idle and a second slider can never steal an in-flight drag.
     rail.InputBegan:Connect(function(i)
-        if i.UserInputType == Enum.UserInputType.MouseButton1
-        or i.UserInputType == Enum.UserInputType.Touch then
-            dragging = true
-            apply(i.Position.X)
-        end
-    end)
-    UserInputService.InputChanged:Connect(function(i)
-        if dragging and (i.UserInputType == Enum.UserInputType.MouseMovement
-        or i.UserInputType == Enum.UserInputType.Touch) then
-            apply(i.Position.X)
-        end
-    end)
-    UserInputService.InputEnded:Connect(function(i)
-        if dragging and (i.UserInputType == Enum.UserInputType.MouseButton1
-        or i.UserInputType == Enum.UserInputType.Touch) then
-            dragging = false
+        if i.UserInputType ~= Enum.UserInputType.MouseButton1
+        and i.UserInputType ~= Enum.UserInputType.Touch then return end
+        apply(i.Position.X)
+        local moveConn
+        moveConn = UserInputService.InputChanged:Connect(function(m)
+            if m.UserInputType == Enum.UserInputType.MouseMovement
+            or m == i then
+                apply(m.Position.X)
+            end
+        end)
+        local endConn
+        endConn = UserInputService.InputEnded:Connect(function(e)
+            if e.UserInputType ~= Enum.UserInputType.MouseButton1 and e ~= i then return end
+            moveConn:Disconnect()
+            endConn:Disconnect()
             saveSettings()
-        end
+        end)
     end)
 
     render()
 end
 
-makeSlider("Block range", 328, 6, 40,
+makeSlider("Block range", at(34), 6, 40,
     function() return Config.blockRange end,
     function(v) Config.blockRange = v end)
 
-makeSlider("Kick range", 366, 6, 30,
+makeSlider("Kick range", at(34), 6, 30,
     function() return Config.kickRange end,
     function(v) Config.kickRange = v end)
 
-divider(402)
+body.CanvasSize = UDim2.fromOffset(0, Y + 8)
 
 -- Status strip ------------------------------------------------------------
+-- Outside the scroll body: pinned to the bottom of the panel so combat state
+-- is readable no matter where the body is scrolled.
 local statusStrip = Instance.new("Frame")
-statusStrip.Size             = UDim2.new(1, -18, 0, 30)
-statusStrip.Position         = UDim2.fromOffset(9, 410)
+statusStrip.Size             = UDim2.new(1, -21, 0, 30)
+statusStrip.Position         = UDim2.new(0, 12, 1, -38)
 statusStrip.BackgroundColor3 = COL.field
 statusStrip.BorderSizePixel  = 1
 statusStrip.BorderColor3     = COL.line
-statusStrip.Parent           = body
+statusStrip.Parent           = frame
 
 local statusBar = Instance.new("Frame")
 statusBar.Size             = UDim2.fromOffset(3, 30)
@@ -1041,6 +1341,16 @@ chipStatus.TextColor3             = COL.dim
 chipStatus.Font                   = Enum.Font.GothamBold
 chipStatus.TextSize               = 8
 chipStatus.Parent                 = chip
+
+-- Unanswered anim offers get a dot on the chip, so a find during a fight is
+-- still there to action once the fight is over.
+local chipDot = Instance.new("Frame")
+chipDot.Size             = UDim2.fromOffset(6, 6)
+chipDot.Position         = UDim2.new(1, -9, 0, 6)
+chipDot.BackgroundColor3 = COL.accent
+chipDot.BorderSizePixel  = 0
+chipDot.Visible          = false
+chipDot.Parent           = chip
 
 local function togglePanel()
     border.Visible = not border.Visible
@@ -1143,17 +1453,26 @@ end)
 
 -- Status feed -------------------------------------------------------------
 task.spawn(function()
+    local wasFaulted = false
     while task.wait(0.1) do
         if Me.baseSpeed then
             speedRead.Text = string.format("%.1f  →  %.1f studs/s",
                 Me.baseSpeed, Me.baseSpeed * Config.speedMultiplier)
         end
 
+        -- A RemoteFunction that never returns leaves the worker parked and the
+        -- shield stuck wherever it was. Surface it instead of going quiet.
+        if Shield.busy and tick() - Shield.since > 2 then Shield.faulted = true end
+        if Shield.faulted and not wasFaulted then Sfx.play("fail") end
+        wasFaulted = Shield.faulted
+
         local text, colour
         if not alive() then
             text, colour = "DEAD", COL.dim
         elseif Shield.faulted then
             text, colour = "SHIELD FAULT", COL.alert
+        elseif tick() - Guard.cappedAt < 4 then
+            text, colour = string.format("SPEED CAPPED  %.1fx", Config.speedMultiplier), COL.alert
         elseif isKnocked() then
             text, colour = "KNOCKED", COL.alert
         elseif Shield.actual then
@@ -1163,6 +1482,9 @@ task.spawn(function()
             text, colour = "ARMED  WATCHING", COL.accent
         elseif Config.autoBlock then
             text, colour = "ARMED  STANDBY", COL.dim
+        elseif #pendingAnims > 0 then
+            text, colour = #pendingAnims .. " UNKNOWN ANIM"
+                        .. (#pendingAnims == 1 and "" or "S"), COL.accent
         else
             text, colour = "IDLE", COL.dim
         end
@@ -1172,5 +1494,6 @@ task.spawn(function()
         statusStrip.BorderColor3     = colour ~= COL.dim and colour or COL.line
         chipStatus.Text              = Shield.actual and "BLK" or (Config.autoBlock and "ARM" or "OFF")
         chipStatus.TextColor3        = colour
+        chipDot.Visible              = #pendingAnims > 0
     end
 end)
