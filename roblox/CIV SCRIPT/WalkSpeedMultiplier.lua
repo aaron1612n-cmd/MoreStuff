@@ -188,6 +188,21 @@ local function bindEnemyChar(p, char)
             entry.shielding = pvpFolder:FindFirstChild("Shielding")
         end
         entry.hpFill = makeHPBar(char)
+
+        -- Event-driven fast path: AnimationPlayed fires in the same frame the
+        -- anim starts, before the next RenderStepped poll would catch it.
+        if entry.animator then
+            entry.animConn = entry.animator.AnimationPlayed:Connect(function(track)
+                if not Config.autoBlock or not alive() or isKnocked() then return end
+                if not (entry.root and Me.root) then return end
+                local dist = (entry.root.Position - Me.root.Position).Magnitude
+                if isAttackTrack(track) and dist <= Config.blockRange then
+                    Shield.set(true)
+                elseif isKickTrack(track) and dist <= Config.kickRange + 4 then
+                    if Shield.actual then Shield.set(false) end
+                end
+            end)
+        end
     end)
 end
 
@@ -195,7 +210,11 @@ local function trackPlayer(p)
     if p == player then return end
     if p.Character then bindEnemyChar(p, p.Character) end
     p.CharacterAdded:Connect(function(char) bindEnemyChar(p, char) end)
-    p.CharacterRemoving:Connect(function() Enemies[p] = nil end)
+    p.CharacterRemoving:Connect(function()
+        local e = Enemies[p]
+        if e and e.animConn then e.animConn:Disconnect() end
+        Enemies[p] = nil
+    end)
 end
 
 for _, p in ipairs(Players:GetPlayers()) do trackPlayer(p) end
