@@ -145,6 +145,7 @@ local screen = Instance.new("ScreenGui")
 screen.Name        = "CivCCPanel"
 screen.ResetOnSpawn = false
 screen.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+screen.DisplayOrder = 999
 screen.Parent      = playerGui
 
 local frame = Instance.new("Frame")
