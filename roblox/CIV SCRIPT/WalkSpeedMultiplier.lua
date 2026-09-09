@@ -247,13 +247,14 @@ local function bindCharacter(char)
             Me.combat     = pvpFolder:FindFirstChild("CombatMode")
             Me.knocked    = pvpFolder:FindFirstChild("Knocked")
             Me.stationary = pvpFolder:FindFirstChild("Stationary")
-            -- Server sets Stationary = true → game LocalScript zeros WalkSpeed.
-            -- We defer applySpeed so it runs after their handler and reclaims speed.
             if Me.stationary then
                 Me.stationary.Changed:Connect(function(v)
-                    if v and Me.char == char then
-                        task.defer(applySpeed)
-                    end
+                    if v and Me.char == char then task.defer(applySpeed) end
+                end)
+            end
+            if Me.knocked then
+                Me.knocked.Changed:Connect(function(v)
+                    if not v and Me.char == char then task.defer(applySpeed) end
                 end)
             end
         end
@@ -294,7 +295,7 @@ end)
 local threatCount = 0
 
 RunService.RenderStepped:Connect(function()
-    if not Config.autoBlock or not alive() or isKnocked() or not inCombat() or not Me.root then
+    if not Config.autoBlock or not alive() or isKnocked() or not Me.root then
         threatCount = 0
         Shield.set(false)
         return
@@ -331,6 +332,32 @@ RunService.RenderStepped:Connect(function()
         Shield.set(false)
     else
         Shield.set(threats > 0)
+    end
+end)
+
+-- Debug: print unrecognized anim IDs from nearby enemies (remove once anim table is complete)
+local _debugLastPrint = 0
+task.spawn(function()
+    while task.wait(1) do
+        if not Config.autoBlock or not Me.root then continue end
+        local t = tick()
+        if t - _debugLastPrint < 3 then continue end
+        local myPos = Me.root.Position
+        for _, e in pairs(Enemies) do
+            if not (e.root and e.animator and e.root.Parent) then continue end
+            if (e.root.Position - myPos).Magnitude > Config.blockRange + 10 then continue end
+            local ok, tracks = pcall(e.animator.GetPlayingAnimationTracks, e.animator)
+            if not ok then continue end
+            for _, track in ipairs(tracks) do
+                if track.IsPlaying then
+                    local id = getTrackId(track)
+                    if id ~= 0 and not ATTACK_ANIMS[id] and id ~= KICK_ANIM_ID then
+                        print("[CIV] unknown anim near you:", id)
+                        _debugLastPrint = t
+                    end
+                end
+            end
+        end
     end
 end)
 
