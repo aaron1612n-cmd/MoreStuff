@@ -207,9 +207,11 @@ local speedConn
 
 local function applySpeed()
     if not Me.baseSpeed then return end
-    local target = Me.baseSpeed * Config.speedMultiplier
+    -- ±0.8 stud noise so the value is never a clean round number on the wire
+    local noise = (math.random() - 0.5) * 1.6
+    local target = Me.baseSpeed * Config.speedMultiplier + noise
     if Me.speedVal then
-        if math.abs(Me.speedVal.Value - target) > 0.01 then
+        if math.abs(Me.speedVal.Value - target) > 0.8 then
             Me.lastWrite = target
             Me.speedVal.Value = target
         end
@@ -797,18 +799,23 @@ local function togglePanel()
     chipBtn.TextColor3 = border.Visible and COL.accent or COL.dim
 end
 
-chipBtn.MouseButton1Click:Connect(togglePanel)
-
 do
-    local dragging, startPos, startInput
-    chip.InputBegan:Connect(function(i)
+    local dragging, moved, startPos, startInput
+    -- chipBtn covers the whole frame so drag and click both wire here.
+    -- A move > 4px counts as a drag; anything smaller is a tap/click → togglePanel.
+    chipBtn.InputBegan:Connect(function(i)
         if i.UserInputType == Enum.UserInputType.MouseButton1
         or i.UserInputType == Enum.UserInputType.Touch then
             dragging   = true
+            moved      = false
             startPos   = chip.Position
             startInput = i.Position
             i.Changed:Connect(function()
-                if i.UserInputState == Enum.UserInputState.End then dragging = false end
+                if i.UserInputState == Enum.UserInputState.End then
+                    if not moved then togglePanel() end
+                    dragging = false
+                    moved    = false
+                end
             end)
         end
     end)
@@ -817,10 +824,13 @@ do
         if i.UserInputType ~= Enum.UserInputType.MouseMovement
         and i.UserInputType ~= Enum.UserInputType.Touch then return end
         local d = i.Position - startInput
-        chip.Position = UDim2.new(
-            startPos.X.Scale, startPos.X.Offset + d.X,
-            startPos.Y.Scale, startPos.Y.Offset + d.Y
-        )
+        if d.Magnitude > 4 then moved = true end
+        if moved then
+            chip.Position = UDim2.new(
+                startPos.X.Scale, startPos.X.Offset + d.X,
+                startPos.Y.Scale, startPos.Y.Offset + d.Y
+            )
+        end
     end)
 end
 
