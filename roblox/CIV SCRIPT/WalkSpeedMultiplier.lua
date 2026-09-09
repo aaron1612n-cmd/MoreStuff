@@ -341,9 +341,9 @@ frame.BorderSizePixel  = 0
 frame.Active           = true
 frame.Parent           = border
 
--- Left accent stripe (3px, full height, amber)
+-- Left accent stripe (3px, tracks frame height via Scale)
 local stripe = Instance.new("Frame")
-stripe.Size             = UDim2.fromOffset(3, PANEL_H)
+stripe.Size             = UDim2.new(0, 3, 1, 0)
 stripe.BackgroundColor3 = COL.accent
 stripe.BorderSizePixel  = 0
 stripe.Parent           = frame
@@ -376,7 +376,7 @@ title.Parent                 = titleBar
 
 local verLabel = Instance.new("TextLabel")
 verLabel.Size                   = UDim2.fromOffset(28, 14)
-verLabel.Position               = UDim2.new(1, -84, 0.5, -7)
+verLabel.Position               = UDim2.new(1, -36, 0.5, -7)
 verLabel.BackgroundTransparency = 1
 verLabel.Text                   = "v3"
 verLabel.TextColor3             = COL.dim
@@ -384,19 +384,6 @@ verLabel.Font                   = Enum.Font.GothamBold
 verLabel.TextSize               = 10
 verLabel.TextXAlignment         = Enum.TextXAlignment.Right
 verLabel.Parent                 = titleBar
-
-local minBtn = Instance.new("TextButton")
-minBtn.Size              = UDim2.fromOffset(32, 22)
-minBtn.Position          = UDim2.new(1, -40, 0.5, -11)
-minBtn.BackgroundColor3  = COL.field
-minBtn.BorderSizePixel   = 1
-minBtn.BorderColor3      = COL.line
-minBtn.Text              = "−"
-minBtn.TextColor3        = COL.dim
-minBtn.Font              = Enum.Font.GothamBold
-minBtn.TextSize          = 15
-minBtn.AutoButtonColor   = false
-minBtn.Parent            = titleBar
 
 -- Body --------------------------------------------------------------------
 -- Offset by 3px on left to clear the accent stripe
@@ -712,21 +699,82 @@ do
     end)
 end
 
--- Minimize ----------------------------------------------------------------
-local minimized = false
-minBtn.MouseButton1Click:Connect(function()
-    minimized = not minimized
-    body.Visible = not minimized
-    border.Size  = minimized and UDim2.fromOffset(PANEL_W + 2, 40)
-                             or UDim2.fromOffset(PANEL_W + 2, PANEL_H + 2)
-    minBtn.Text  = minimized and "+" or "−"
-end)
+-- Floating toggle button -------------------------------------------------
+-- Independent draggable chip that shows/hides the panel.
+-- Stays visible even when the panel is hidden.
+local chip = Instance.new("Frame")
+chip.Size             = UDim2.fromOffset(48, 48)
+chip.Position         = UDim2.new(0, 289, 0.5, -24)
+chip.BackgroundColor3 = COL.bar
+chip.BorderSizePixel  = 1
+chip.BorderColor3     = COL.accent
+chip.Active           = true
+chip.Parent           = screen
+
+local chipAccent = Instance.new("Frame")
+chipAccent.Size             = UDim2.fromOffset(48, 3)
+chipAccent.BackgroundColor3 = COL.accent
+chipAccent.BorderSizePixel  = 0
+chipAccent.Parent           = chip
+
+local chipBtn = Instance.new("TextButton")
+chipBtn.Size              = UDim2.new(1, 0, 1, 0)
+chipBtn.BackgroundTransparency = 1
+chipBtn.Text              = "CC"
+chipBtn.TextColor3        = COL.accent
+chipBtn.Font              = Enum.Font.GothamBold
+chipBtn.TextSize          = 14
+chipBtn.AutoButtonColor   = false
+chipBtn.Parent            = chip
+
+local chipStatus = Instance.new("TextLabel")
+chipStatus.Size                   = UDim2.new(1, 0, 0, 14)
+chipStatus.Position               = UDim2.new(0, 0, 1, -16)
+chipStatus.BackgroundTransparency = 1
+chipStatus.Text                   = "OFF"
+chipStatus.TextColor3             = COL.dim
+chipStatus.Font                   = Enum.Font.GothamBold
+chipStatus.TextSize               = 8
+chipStatus.Parent                 = chip
+
+local function togglePanel()
+    border.Visible = not border.Visible
+    chip.BorderColor3 = border.Visible and COL.accent or COL.dim
+    chipBtn.TextColor3 = border.Visible and COL.accent or COL.dim
+end
+
+chipBtn.MouseButton1Click:Connect(togglePanel)
+
+do
+    local dragging, startPos, startInput
+    chip.InputBegan:Connect(function(i)
+        if i.UserInputType == Enum.UserInputType.MouseButton1
+        or i.UserInputType == Enum.UserInputType.Touch then
+            dragging   = true
+            startPos   = chip.Position
+            startInput = i.Position
+            i.Changed:Connect(function()
+                if i.UserInputState == Enum.UserInputState.End then dragging = false end
+            end)
+        end
+    end)
+    UserInputService.InputChanged:Connect(function(i)
+        if not dragging then return end
+        if i.UserInputType ~= Enum.UserInputType.MouseMovement
+        and i.UserInputType ~= Enum.UserInputType.Touch then return end
+        local d = i.Position - startInput
+        chip.Position = UDim2.new(
+            startPos.X.Scale, startPos.X.Offset + d.X,
+            startPos.Y.Scale, startPos.Y.Offset + d.Y
+        )
+    end)
+end
 
 -- Keybinds ----------------------------------------------------------------
 UserInputService.InputBegan:Connect(function(input, processed)
     if processed or UserInputService:GetFocusedTextBox() then return end
     if input.KeyCode == Config.keyPanel then
-        screen.Enabled = not screen.Enabled
+        togglePanel()
         return
     end
     local flip = toggles[input.KeyCode]
@@ -768,5 +816,7 @@ task.spawn(function()
         status.TextColor3            = colour
         statusBar.BackgroundColor3   = colour
         statusStrip.BorderColor3     = colour ~= COL.dim and colour or COL.line
+        chipStatus.Text              = Shield.actual and "BLK" or (Config.autoBlock and "ARM" or "OFF")
+        chipStatus.TextColor3        = colour
     end
 end)
