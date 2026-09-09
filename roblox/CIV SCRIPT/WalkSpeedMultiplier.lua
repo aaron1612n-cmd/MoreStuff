@@ -220,6 +220,24 @@ local function applySpeed()
     end
 end
 
+-- ═══ WalkSpeed spoof ══════════════════════════════════════════════════════
+-- Hook __index on the game metatable so reads of Humanoid.WalkSpeed return
+-- the base speed, not the hacked value. Fools any LocalScript AC that polls
+-- the property directly. Silently no-ops if the executor doesn't expose
+-- getrawmetatable / setreadonly (e.g. vanilla Studio).
+pcall(function()
+    local mt = getrawmetatable(game)
+    setreadonly(mt, false)
+    local origIndex = mt.__index
+    mt.__index = newcclosure(function(self, key)
+        if key == "WalkSpeed" and Me.humanoid and rawequal(self, Me.humanoid) then
+            return Me.baseSpeed or origIndex(self, key)
+        end
+        return origIndex(self, key)
+    end)
+    setreadonly(mt, true)
+end)
+
 local function bindCharacter(char)
     Me.char     = char
     Me.humanoid = nil
