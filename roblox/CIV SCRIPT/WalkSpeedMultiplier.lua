@@ -20,7 +20,6 @@ local autoBlockOn     = false
 local autoKickOn      = false
 local blocking        = false
 local KICK_RANGE      = 14
-local BLOCK_RANGE     = 10  -- preemptive block radius (melee reach)
 
 -- Attack animation IDs — secondary trigger for enemies outside preemptive range
 local ATTACK_ANIMS = {
@@ -47,21 +46,6 @@ local function isInCombat()
     if not c then return false end
     local pvpFolder = c:FindFirstChild("Pvp")
     return pvpFolder and pvpFolder:FindFirstChild("CombatMode") and pvpFolder.CombatMode.Value
-end
-
-local function enemyInRange(range)
-    local root = getRoot()
-    if not root then return false end
-    for _, p in ipairs(Players:GetPlayers()) do
-        if p == player then continue end
-        local c = p.Character
-        if not c then continue end
-        local r = c:FindFirstChild("HumanoidRootPart")
-        if r and (r.Position - root.Position).Magnitude <= range then
-            return true
-        end
-    end
-    return false
 end
 
 -- ─── Speed ─────────────────────────────────────────────────────────────────
@@ -97,7 +81,7 @@ task.spawn(function()
 end)
 
 -- ─── Block ─────────────────────────────────────────────────────────────────
-local unblockAt = 0
+local activeBlocks = 0  -- count of ongoing attack anims we're blocking for
 
 local function doBlock(state)
     if blocking == state then return end
@@ -105,31 +89,7 @@ local function doBlock(state)
     pcall(function() shieldRem:InvokeServer(state) end)
 end
 
-local function scheduleUnblock(delay)
-    unblockAt = tick() + (delay or 0.5)
-end
-
--- Preemptive block loop: stay blocked while an enemy is within melee range in combat
-task.spawn(function()
-    while task.wait(0.05) do
-        if not autoBlockOn then
-            if blocking then doBlock(false) end
-            continue
-        end
-        if not isInCombat() then
-            if blocking then doBlock(false) end
-            continue
-        end
-        if enemyInRange(BLOCK_RANGE) then
-            doBlock(true)
-            scheduleUnblock(0.3)  -- short window after they leave range
-        elseif blocking and tick() >= unblockAt then
-            doBlock(false)
-        end
-    end
-end)
-
--- ─── Animation watcher — catches enemies just outside BLOCK_RANGE ───────────
+-- ─── Animation watcher — block on swing start, unblock when anim ends ────────
 local animConns = {}
 
 local function watchPlayer(p)
@@ -151,10 +111,20 @@ local function watchPlayer(p)
             if not root or not theirRoot then return end
             if (theirRoot.Position - root.Position).Magnitude > KICK_RANGE + 4 then return end
             local id = tonumber(track.Animation.AnimationId:match("%d+$"))
-            if id and ATTACK_ANIMS[id] then
-                doBlock(true)
-                scheduleUnblock(0.6)
-            end
+            if not (id and ATTACK_ANIMS[id]) then return end
+
+            -- block immediately when the swing starts
+            activeBlocks += 1
+            doBlock(true)
+
+            -- unblock the moment THIS animation ends (not a timer)
+            track.Ended:Connect(function()
+                activeBlocks = math.max(0, activeBlocks - 1)
+                if activeBlocks == 0 then
+                    task.wait(0.05)  -- tiny grace window for combo hits
+                    if activeBlocks == 0 then doBlock(false) end
+                end
+            end)
         end)
     end
 
@@ -170,7 +140,9 @@ local function hookHealth(char)
     healthConn = hum.HealthChanged:Connect(function()
         if not autoBlockOn or not isInCombat() then return end
         doBlock(true)
-        scheduleUnblock(0.6)
+        task.delay(0.5, function()
+            if activeBlocks == 0 then doBlock(false) end
+        end)
     end)
 end
 
