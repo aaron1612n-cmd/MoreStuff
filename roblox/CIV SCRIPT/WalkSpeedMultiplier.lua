@@ -292,25 +292,19 @@ end)
 
 -- ═══ GUI ═══════════════════════════════════════════════════════════════════
 
-local PANEL_W, PANEL_H = 250, 342
-local COL = {
-    bg      = Color3.fromRGB(16, 16, 18),
-    bar     = Color3.fromRGB(26, 26, 30),
-    field   = Color3.fromRGB(38, 38, 44),
-    on      = Color3.fromRGB(0, 178, 92),
-    accent  = Color3.fromRGB(0, 132, 255),
-    text    = Color3.fromRGB(238, 238, 240),
-    dim     = Color3.fromRGB(126, 126, 134),
-    line    = Color3.fromRGB(52, 52, 58),
-    alert   = Color3.fromRGB(255, 96, 96),
-}
+local PANEL_W, PANEL_H = 256, 350
 
-local function corner(inst, r)
-    local c = Instance.new("UICorner")
-    c.CornerRadius = UDim.new(0, r or 6)
-    c.Parent = inst
-    return c
-end
+local COL = {
+    bg      = Color3.fromRGB(8, 9, 12),
+    bar     = Color3.fromRGB(14, 15, 20),
+    field   = Color3.fromRGB(24, 25, 33),
+    on      = Color3.fromRGB(0, 210, 90),
+    accent  = Color3.fromRGB(255, 138, 0),
+    text    = Color3.fromRGB(245, 245, 248),
+    dim     = Color3.fromRGB(108, 110, 122),
+    line    = Color3.fromRGB(36, 38, 50),
+    alert   = Color3.fromRGB(255, 50, 50),
+}
 
 local screen = Instance.new("ScreenGui")
 screen.Name           = "CivCCPanel"
@@ -330,71 +324,99 @@ local function parentGui()
 end
 parentGui()
 
+-- 1px border wrapper gives sharp square outline without UIStroke quirks
+local border = Instance.new("Frame")
+border.Size             = UDim2.fromOffset(PANEL_W + 2, PANEL_H + 2)
+border.Position         = UDim2.new(0, 23, 0.5, -(PANEL_H / 2) - 1)
+border.BackgroundColor3 = COL.line
+border.BorderSizePixel  = 0
+border.Active           = true
+border.Parent           = screen
+
 local frame = Instance.new("Frame")
-frame.Size             = UDim2.fromOffset(PANEL_W, PANEL_H)
-frame.Position         = UDim2.new(0, 24, 0.5, -PANEL_H / 2)
+frame.Size             = UDim2.new(1, -2, 1, -2)
+frame.Position         = UDim2.fromOffset(1, 1)
 frame.BackgroundColor3 = COL.bg
 frame.BorderSizePixel  = 0
 frame.Active           = true
-frame.Parent           = screen
-corner(frame, 10)
+frame.Parent           = border
 
-local stroke = Instance.new("UIStroke")
-stroke.Color       = COL.line
-stroke.Thickness   = 1
-stroke.Transparency = 0.4
-stroke.Parent      = frame
+-- Left accent stripe (3px, full height, amber)
+local stripe = Instance.new("Frame")
+stripe.Size             = UDim2.fromOffset(3, PANEL_H)
+stripe.BackgroundColor3 = COL.accent
+stripe.BorderSizePixel  = 0
+stripe.Parent           = frame
 
 -- Title bar ---------------------------------------------------------------
 local titleBar = Instance.new("Frame")
-titleBar.Size             = UDim2.new(1, 0, 0, 36)
+titleBar.Size             = UDim2.new(1, 0, 0, 38)
 titleBar.BackgroundColor3 = COL.bar
 titleBar.BorderSizePixel  = 0
 titleBar.Parent           = frame
-corner(titleBar, 10)
 
-local barFill = Instance.new("Frame")
-barFill.Size             = UDim2.new(1, 0, 0, 12)
-barFill.Position         = UDim2.new(0, 0, 1, -12)
-barFill.BackgroundColor3 = COL.bar
-barFill.BorderSizePixel  = 0
-barFill.Parent           = titleBar
+-- 1px amber bottom separator on the title bar
+local titleSep = Instance.new("Frame")
+titleSep.Size             = UDim2.new(1, 0, 0, 1)
+titleSep.Position         = UDim2.new(0, 0, 1, -1)
+titleSep.BackgroundColor3 = COL.accent
+titleSep.BorderSizePixel  = 0
+titleSep.Parent           = titleBar
 
 local title = Instance.new("TextLabel")
-title.Size                   = UDim2.new(1, -70, 1, 0)
-title.Position               = UDim2.fromOffset(12, 0)
+title.Size                   = UDim2.new(1, -88, 1, 0)
+title.Position               = UDim2.fromOffset(14, 0)
 title.BackgroundTransparency = 1
 title.Text                   = "CIV CC PANEL"
-title.TextColor3             = COL.text
+title.TextColor3             = COL.accent
 title.Font                   = Enum.Font.GothamBold
-title.TextSize               = 14
+title.TextSize               = 13
 title.TextXAlignment         = Enum.TextXAlignment.Left
 title.Parent                 = titleBar
 
+local verLabel = Instance.new("TextLabel")
+verLabel.Size                   = UDim2.fromOffset(28, 14)
+verLabel.Position               = UDim2.new(1, -84, 0.5, -7)
+verLabel.BackgroundTransparency = 1
+verLabel.Text                   = "v3"
+verLabel.TextColor3             = COL.dim
+verLabel.Font                   = Enum.Font.GothamBold
+verLabel.TextSize               = 10
+verLabel.TextXAlignment         = Enum.TextXAlignment.Right
+verLabel.Parent                 = titleBar
+
 local minBtn = Instance.new("TextButton")
-minBtn.Size              = UDim2.fromOffset(28, 22)
-minBtn.Position          = UDim2.new(1, -36, 0, 7)
+minBtn.Size              = UDim2.fromOffset(32, 22)
+minBtn.Position          = UDim2.new(1, -40, 0.5, -11)
 minBtn.BackgroundColor3  = COL.field
-minBtn.BorderSizePixel   = 0
-minBtn.Text              = "—"
-minBtn.TextColor3        = COL.text
+minBtn.BorderSizePixel   = 1
+minBtn.BorderColor3      = COL.line
+minBtn.Text              = "−"
+minBtn.TextColor3        = COL.dim
 minBtn.Font              = Enum.Font.GothamBold
-minBtn.TextSize          = 13
+minBtn.TextSize          = 15
 minBtn.AutoButtonColor   = false
 minBtn.Parent            = titleBar
-corner(minBtn, 5)
 
 -- Body --------------------------------------------------------------------
+-- Offset by 3px on left to clear the accent stripe
 local body = Instance.new("Frame")
-body.Size                 = UDim2.new(1, 0, 1, -36)
-body.Position             = UDim2.fromOffset(0, 36)
+body.Size                 = UDim2.new(1, -3, 1, -38)
+body.Position             = UDim2.fromOffset(3, 38)
 body.BackgroundTransparency = 1
 body.Parent               = frame
 
 local function sectionLabel(text, y)
+    local bar = Instance.new("Frame")
+    bar.Size             = UDim2.fromOffset(2, 12)
+    bar.Position         = UDim2.fromOffset(9, y + 1)
+    bar.BackgroundColor3 = COL.accent
+    bar.BorderSizePixel  = 0
+    bar.Parent           = body
+
     local l = Instance.new("TextLabel")
-    l.Size                   = UDim2.new(1, -24, 0, 14)
-    l.Position               = UDim2.fromOffset(12, y)
+    l.Size                   = UDim2.new(1, -26, 0, 14)
+    l.Position               = UDim2.fromOffset(16, y)
     l.BackgroundTransparency = 1
     l.Text                   = text
     l.TextColor3             = COL.dim
@@ -407,8 +429,8 @@ end
 
 local function divider(y)
     local d = Instance.new("Frame")
-    d.Size             = UDim2.new(1, -24, 0, 1)
-    d.Position         = UDim2.fromOffset(12, y)
+    d.Size             = UDim2.new(1, -18, 0, 1)
+    d.Position         = UDim2.fromOffset(9, y)
     d.BackgroundColor3 = COL.line
     d.BorderSizePixel  = 0
     d.Parent           = body
@@ -419,8 +441,8 @@ end
 sectionLabel("MOVEMENT", 10)
 
 local speedRead = Instance.new("TextLabel")
-speedRead.Size                   = UDim2.new(1, -24, 0, 14)
-speedRead.Position               = UDim2.fromOffset(12, 26)
+speedRead.Size                   = UDim2.new(1, -20, 0, 14)
+speedRead.Position               = UDim2.fromOffset(9, 26)
 speedRead.BackgroundTransparency = 1
 speedRead.Text                   = "detecting base speed..."
 speedRead.TextColor3             = COL.dim
@@ -430,10 +452,11 @@ speedRead.TextXAlignment         = Enum.TextXAlignment.Left
 speedRead.Parent                 = body
 
 local speedBox = Instance.new("TextBox")
-speedBox.Size              = UDim2.new(1, -84, 0, 28)
-speedBox.Position          = UDim2.fromOffset(12, 46)
+speedBox.Size              = UDim2.new(1, -82, 0, 30)
+speedBox.Position          = UDim2.fromOffset(9, 44)
 speedBox.BackgroundColor3  = COL.field
-speedBox.BorderSizePixel   = 0
+speedBox.BorderSizePixel   = 1
+speedBox.BorderColor3      = COL.line
 speedBox.Text              = tostring(Config.speedMultiplier)
 speedBox.PlaceholderText   = "multiplier"
 speedBox.TextColor3        = COL.text
@@ -441,20 +464,18 @@ speedBox.Font              = Enum.Font.Gotham
 speedBox.TextSize          = 13
 speedBox.ClearTextOnFocus  = false
 speedBox.Parent            = body
-corner(speedBox, 6)
 
 local applyBtn = Instance.new("TextButton")
-applyBtn.Size             = UDim2.fromOffset(60, 28)
-applyBtn.Position         = UDim2.new(1, -72, 0, 46)
+applyBtn.Size             = UDim2.fromOffset(64, 30)
+applyBtn.Position         = UDim2.new(1, -73, 0, 44)
 applyBtn.BackgroundColor3 = COL.accent
 applyBtn.BorderSizePixel  = 0
 applyBtn.Text             = "SET"
-applyBtn.TextColor3       = COL.text
+applyBtn.TextColor3       = COL.bg
 applyBtn.Font             = Enum.Font.GothamBold
 applyBtn.TextSize         = 12
 applyBtn.AutoButtonColor  = false
 applyBtn.Parent           = body
-corner(applyBtn, 6)
 
 local function commitSpeed()
     local v = tonumber(speedBox.Text)
@@ -482,18 +503,26 @@ local toggles = {}
 
 local function makeToggle(name, key, y, get, set)
     local btn = Instance.new("TextButton")
-    btn.Size             = UDim2.new(1, -24, 0, 32)
-    btn.Position         = UDim2.fromOffset(12, y)
+    btn.Size             = UDim2.new(1, -18, 0, 34)
+    btn.Position         = UDim2.fromOffset(9, y)
     btn.BackgroundColor3 = COL.field
-    btn.BorderSizePixel  = 0
+    btn.BorderSizePixel  = 1
+    btn.BorderColor3     = COL.line
     btn.Text             = ""
     btn.AutoButtonColor  = false
     btn.Parent           = body
-    corner(btn, 6)
+
+    -- Left status stripe that appears when ON
+    local activeBar = Instance.new("Frame")
+    activeBar.Size             = UDim2.fromOffset(3, 34)
+    activeBar.BackgroundColor3 = COL.on
+    activeBar.BorderSizePixel  = 0
+    activeBar.Visible          = false
+    activeBar.Parent           = btn
 
     local lbl = Instance.new("TextLabel")
-    lbl.Size                   = UDim2.new(1, -60, 1, 0)
-    lbl.Position               = UDim2.fromOffset(10, 0)
+    lbl.Size                   = UDim2.new(1, -96, 1, 0)
+    lbl.Position               = UDim2.fromOffset(12, 0)
     lbl.BackgroundTransparency = 1
     lbl.Text                   = name
     lbl.TextColor3             = COL.text
@@ -502,22 +531,35 @@ local function makeToggle(name, key, y, get, set)
     lbl.TextXAlignment         = Enum.TextXAlignment.Left
     lbl.Parent                 = btn
 
+    local stateLbl = Instance.new("TextLabel")
+    stateLbl.Size                   = UDim2.fromOffset(28, 14)
+    stateLbl.Position               = UDim2.new(1, -86, 0.5, -7)
+    stateLbl.BackgroundTransparency = 1
+    stateLbl.Text                   = "OFF"
+    stateLbl.TextColor3             = COL.dim
+    stateLbl.Font                   = Enum.Font.GothamBold
+    stateLbl.TextSize               = 10
+    stateLbl.Parent                 = btn
+
+    -- Square keybind chip, no UICorner
     local hint = Instance.new("TextLabel")
-    hint.Size                   = UDim2.fromOffset(46, 16)
-    hint.Position               = UDim2.new(1, -54, 0.5, -8)
+    hint.Size                   = UDim2.fromOffset(48, 20)
+    hint.Position               = UDim2.new(1, -52, 0.5, -10)
     hint.BackgroundColor3       = COL.bg
-    hint.BorderSizePixel        = 0
+    hint.BorderSizePixel        = 1
+    hint.BorderColor3           = COL.line
     hint.Text                   = "[" .. key.Name .. "]"
     hint.TextColor3             = COL.dim
     hint.Font                   = Enum.Font.Gotham
     hint.TextSize               = 10
     hint.Parent                 = btn
-    corner(hint, 4)
 
     local function render()
         local on = get()
-        btn.BackgroundColor3 = on and COL.on or COL.field
-        hint.BackgroundTransparency = on and 0.75 or 0
+        btn.BorderColor3    = on and COL.on or COL.line
+        activeBar.Visible   = on
+        stateLbl.Text       = on and "ON" or "OFF"
+        stateLbl.TextColor3 = on and COL.on or COL.dim
     end
 
     local function flip()
@@ -538,15 +580,15 @@ makeToggle("Auto Block", Config.keyBlock, 114,
         if not v then Shield.set(false) end
     end)
 
-makeToggle("Auto Kick", Config.keyKick, 152,
+makeToggle("Auto Kick", Config.keyKick, 154,
     function() return Config.autoKick end,
     function(v) Config.autoKick = v end)
 
 -- Sliders -----------------------------------------------------------------
 local function makeSlider(name, y, minV, maxV, getV, setV)
     local lbl = Instance.new("TextLabel")
-    lbl.Size                   = UDim2.new(1, -24, 0, 14)
-    lbl.Position               = UDim2.fromOffset(12, y)
+    lbl.Size                   = UDim2.new(1, -18, 0, 14)
+    lbl.Position               = UDim2.fromOffset(9, y)
     lbl.BackgroundTransparency = 1
     lbl.Text                   = name .. ": " .. getV()
     lbl.TextColor3             = COL.dim
@@ -556,19 +598,18 @@ local function makeSlider(name, y, minV, maxV, getV, setV)
     lbl.Parent                 = body
 
     local rail = Instance.new("Frame")
-    rail.Size             = UDim2.new(1, -24, 0, 6)
-    rail.Position         = UDim2.fromOffset(12, y + 18)
+    rail.Size             = UDim2.new(1, -18, 0, 8)
+    rail.Position         = UDim2.fromOffset(9, y + 18)
     rail.BackgroundColor3 = COL.field
-    rail.BorderSizePixel  = 0
+    rail.BorderSizePixel  = 1
+    rail.BorderColor3     = COL.line
     rail.Active           = true
     rail.Parent           = body
-    corner(rail, 3)
 
     local fill = Instance.new("Frame")
     fill.BackgroundColor3 = COL.accent
     fill.BorderSizePixel  = 0
     fill.Parent           = rail
-    corner(fill, 3)
 
     local function render()
         local a = (getV() - minV) / (maxV - minV)
@@ -607,27 +648,41 @@ local function makeSlider(name, y, minV, maxV, getV, setV)
     render()
 end
 
-makeSlider("Block range", 194, 6, 40,
+makeSlider("Block range", 200, 6, 40,
     function() return Config.blockRange end,
     function(v) Config.blockRange = v end)
 
-makeSlider("Kick range", 232, 6, 30,
+makeSlider("Kick range", 238, 6, 30,
     function() return Config.kickRange end,
     function(v) Config.kickRange = v end)
 
-divider(268)
+divider(272)
 
--- Status ------------------------------------------------------------------
+-- Status strip ------------------------------------------------------------
+local statusStrip = Instance.new("Frame")
+statusStrip.Size             = UDim2.new(1, -18, 0, 30)
+statusStrip.Position         = UDim2.fromOffset(9, 280)
+statusStrip.BackgroundColor3 = COL.field
+statusStrip.BorderSizePixel  = 1
+statusStrip.BorderColor3     = COL.line
+statusStrip.Parent           = body
+
+local statusBar = Instance.new("Frame")
+statusBar.Size             = UDim2.fromOffset(3, 30)
+statusBar.BackgroundColor3 = COL.dim
+statusBar.BorderSizePixel  = 0
+statusBar.Parent           = statusStrip
+
 local status = Instance.new("TextLabel")
-status.Size                   = UDim2.new(1, -24, 0, 16)
-status.Position               = UDim2.fromOffset(12, 276)
+status.Size                   = UDim2.new(1, -14, 1, 0)
+status.Position               = UDim2.fromOffset(11, 0)
 status.BackgroundTransparency = 1
-status.Text                   = "idle"
+status.Text                   = "IDLE"
 status.TextColor3             = COL.dim
-status.Font                   = Enum.Font.GothamMedium
+status.Font                   = Enum.Font.GothamBold
 status.TextSize               = 11
 status.TextXAlignment         = Enum.TextXAlignment.Left
-status.Parent                 = body
+status.Parent                 = statusStrip
 
 -- Drag --------------------------------------------------------------------
 -- Frame.Draggable is deprecated and unreliable once the GUI lives outside
@@ -638,7 +693,7 @@ do
         if i.UserInputType == Enum.UserInputType.MouseButton1
         or i.UserInputType == Enum.UserInputType.Touch then
             dragging   = true
-            startPos   = frame.Position
+            startPos   = border.Position
             startInput = i.Position
             i.Changed:Connect(function()
                 if i.UserInputState == Enum.UserInputState.End then dragging = false end
@@ -650,7 +705,7 @@ do
         if i.UserInputType ~= Enum.UserInputType.MouseMovement
         and i.UserInputType ~= Enum.UserInputType.Touch then return end
         local d = i.Position - startInput
-        frame.Position = UDim2.new(
+        border.Position = UDim2.new(
             startPos.X.Scale, startPos.X.Offset + d.X,
             startPos.Y.Scale, startPos.Y.Offset + d.Y
         )
@@ -662,9 +717,9 @@ local minimized = false
 minBtn.MouseButton1Click:Connect(function()
     minimized = not minimized
     body.Visible = not minimized
-    frame.Size   = minimized and UDim2.fromOffset(PANEL_W, 36)
-                             or UDim2.fromOffset(PANEL_W, PANEL_H)
-    minBtn.Text  = minimized and "+" or "—"
+    border.Size  = minimized and UDim2.fromOffset(PANEL_W + 2, 40)
+                             or UDim2.fromOffset(PANEL_W + 2, PANEL_H + 2)
+    minBtn.Text  = minimized and "+" or "−"
 end)
 
 -- Keybinds ----------------------------------------------------------------
@@ -696,20 +751,22 @@ task.spawn(function()
 
         local text, colour
         if not alive() then
-            text, colour = "dead", COL.dim
+            text, colour = "DEAD", COL.dim
         elseif isKnocked() then
-            text, colour = "knocked", COL.alert
+            text, colour = "KNOCKED", COL.alert
         elseif Shield.actual then
-            text, colour = "BLOCKING · " .. threatCount .. " threat"
-                        .. (threatCount == 1 and "" or "s"), COL.on
+            text, colour = "BLOCKING  " .. threatCount .. " THREAT"
+                        .. (threatCount == 1 and "" or "S"), COL.on
         elseif Config.autoBlock and inCombat() then
-            text, colour = "armed · watching", COL.accent
+            text, colour = "ARMED  WATCHING", COL.accent
         elseif Config.autoBlock then
-            text, colour = "armed · out of combat", COL.dim
+            text, colour = "ARMED  STANDBY", COL.dim
         else
-            text, colour = "idle", COL.dim
+            text, colour = "IDLE", COL.dim
         end
-        status.Text      = text
-        status.TextColor3 = colour
+        status.Text                  = text
+        status.TextColor3            = colour
+        statusBar.BackgroundColor3   = colour
+        statusStrip.BorderColor3     = colour ~= COL.dim and colour or COL.line
     end
 end)
