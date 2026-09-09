@@ -82,7 +82,6 @@ btn.MouseButton1Click:Connect(function()
     local val = tonumber(box.Text)
     if val and val > 0 then
         multiplier = val
-        applySpeed()
         btn.Text = "Applied!"
         task.delay(1, function() btn.Text = "Apply" end)
     else
@@ -91,4 +90,8 @@ btn.MouseButton1Click:Connect(function()
     end
 end)
 
-applySpeed()
+task.spawn(function()
+    while task.wait(0.1) do
+        applySpeed()
+    end
+end)
