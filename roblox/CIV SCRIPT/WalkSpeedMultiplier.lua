@@ -81,78 +81,42 @@ task.spawn(function()
 end)
 
 -- ─── Block ─────────────────────────────────────────────────────────────────
-local activeBlocks = 0  -- count of ongoing attack anims we're blocking for
-
 local function doBlock(state)
     if blocking == state then return end
     blocking = state
     pcall(function() shieldRem:InvokeServer(state) end)
 end
 
--- ─── Animation watcher — block on swing start, unblock when anim ends ────────
-local animConns = {}
-
-local function watchPlayer(p)
-    if p == player then return end
-    if animConns[p] then animConns[p]:Disconnect() end
-
-    local function hookChar(char)
-        if not char then return end
-        local hum = char:WaitForChild("Humanoid", 5)
-        if not hum then return end
-        local anim = hum:FindFirstChildOfClass("Animator") or hum:WaitForChild("Animator", 3)
-        if not anim then return end
-
-        animConns[p] = anim.AnimationPlayed:Connect(function(track)
-            if not autoBlockOn then return end
-            if not isInCombat() then return end
-            local root = getRoot()
-            local theirRoot = char:FindFirstChild("HumanoidRootPart")
-            if not root or not theirRoot then return end
-            if (theirRoot.Position - root.Position).Magnitude > KICK_RANGE + 4 then return end
-            local id = tonumber(track.Animation.AnimationId:match("%d+$"))
-            if not (id and ATTACK_ANIMS[id]) then return end
-
-            -- block immediately when the swing starts
-            activeBlocks += 1
-            doBlock(true)
-
-            -- unblock the moment THIS animation ends (not a timer)
-            track.Ended:Connect(function()
-                activeBlocks = math.max(0, activeBlocks - 1)
-                if activeBlocks == 0 then
-                    task.wait(0.05)  -- tiny grace window for combo hits
-                    if activeBlocks == 0 then doBlock(false) end
+-- Poll nearby enemies every 0.05s — block if ANY attack anim is currently playing
+task.spawn(function()
+    while task.wait(0.05) do
+        if not autoBlockOn or not isInCombat() then
+            if blocking then doBlock(false) end
+            continue
+        end
+        local root = getRoot()
+        if not root then continue end
+        local shouldBlock = false
+        for _, p in ipairs(Players:GetPlayers()) do
+            if p == player or shouldBlock then continue end
+            local c = p.Character
+            if not c then continue end
+            local theirRoot = c:FindFirstChild("HumanoidRootPart")
+            if not theirRoot then continue end
+            if (theirRoot.Position - root.Position).Magnitude > KICK_RANGE + 4 then continue end
+            local hum = c:FindFirstChild("Humanoid")
+            local anim = hum and hum:FindFirstChildOfClass("Animator")
+            if not anim then continue end
+            for _, track in ipairs(anim:GetPlayingAnimationTracks()) do
+                local id = tonumber(track.Animation.AnimationId:match("%d+$"))
+                if id and ATTACK_ANIMS[id] then
+                    shouldBlock = true
+                    break
                 end
-            end)
-        end)
+            end
+        end
+        doBlock(shouldBlock)
     end
-
-    if p.Character then task.spawn(function() hookChar(p.Character) end) end
-    p.CharacterAdded:Connect(hookChar)
-end
-
--- Fallback: HealthChanged for anything that slips through
-local healthConn
-local function hookHealth(char)
-    if healthConn then healthConn:Disconnect() end
-    local hum = char:WaitForChild("Humanoid")
-    healthConn = hum.HealthChanged:Connect(function()
-        if not autoBlockOn or not isInCombat() then return end
-        doBlock(true)
-        task.delay(0.5, function()
-            if activeBlocks == 0 then doBlock(false) end
-        end)
-    end)
-end
-
-player.CharacterAdded:Connect(hookHealth)
-if player.Character then task.spawn(function() hookHealth(player.Character) end) end
-
-for _, p in ipairs(Players:GetPlayers()) do watchPlayer(p) end
-Players.PlayerAdded:Connect(watchPlayer)
-Players.PlayerRemoving:Connect(function(p)
-    if animConns[p] then animConns[p]:Disconnect(); animConns[p] = nil end
 end)
 
 -- ─── Auto Kick ─────────────────────────────────────────────────────────────
