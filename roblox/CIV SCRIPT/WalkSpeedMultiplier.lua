@@ -32,7 +32,6 @@ local ATTACK_ANIMS = {
     [71003966899873]   = true, -- SmallSwing
     [77833157080982]   = true, -- MediumSwing
     [111120820640543]  = true, -- SickleSwing
-    [111619765264257]  = true, -- Kick
 }
 
 -- ─── Character helpers ─────────────────────────────────────────────────────
