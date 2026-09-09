@@ -34,6 +34,7 @@ local Config = {
     kickCooldown    = 1.0,
     learnedAnims    = {},
     dismissedAnims  = {},
+    rangedAnims     = {},
     keyPanel        = Enum.KeyCode.RightShift,
     keyBlock        = Enum.KeyCode.B,
     keyKick         = Enum.KeyCode.K,
@@ -55,6 +56,7 @@ local function saveSettings()
             sounds          = Config.sounds,
             learnedAnims    = Config.learnedAnims,
             dismissedAnims  = Config.dismissedAnims,
+            rangedAnims     = Config.rangedAnims,
         }))
     end)
 end
@@ -120,9 +122,13 @@ local KICK_ANIM_ID = 111619765264257
 
 -- Anims he taught the panel in-game, and ones he waved off. Both persist, so a
 -- rejoin doesn't re-ask about the same idle loop.
+-- Projectile/ranged attacks: raise shield but skip auto-face (facing doesn't help).
+local RANGED_ANIMS = {}
+
 local DISMISSED = {}
 for _, id in ipairs(Config.learnedAnims)   do ATTACK_ANIMS[id] = true end
 for _, id in ipairs(Config.dismissedAnims) do DISMISSED[id]    = true end
+for _, id in ipairs(Config.rangedAnims)    do RANGED_ANIMS[id] = true end
 
 local pendingAnims   = {}   -- unknown ids awaiting a verdict, newest first, max 3
 local offeredAnims   = {}   -- [id] = true, already sitting in the queue
@@ -299,7 +305,7 @@ local TRACK_TTL = 3
 
 local function bindEnemyChar(p, char)
     if not char then return end
-    local entry = { char = char, attacks = {}, kicks = {} }
+    local entry = { char = char, attacks = {}, kicks = {}, ranged = {} }
     Enemies[p] = entry
 
     task.spawn(function()
@@ -321,7 +327,9 @@ local function bindEnemyChar(p, char)
         if ok then
             for _, track in ipairs(tracks) do
                 local id = getTrackId(track)
-                if ATTACK_ANIMS[id] then entry.attacks[track] = tick() + TRACK_TTL end
+                if      ATTACK_ANIMS[id] then entry.attacks[track] = tick() + TRACK_TTL
+                elseif  RANGED_ANIMS[id] then entry.ranged[track]  = tick() + TRACK_TTL
+                end
             end
         end
 
@@ -617,19 +625,23 @@ local lastKick = 0
 task.spawn(function()
     while task.wait(0.1) do
         if not Config.autoKick then continue end
-        if not alive() or isKnocked() or not inCombat() or not Me.root then continue end
+        if not alive() or isKnocked() or not Me.root then continue end
         if tick() - lastKick < Config.kickCooldown then continue end
 
         local myPos = Me.root.Position
+        local closest, closestDist = nil, math.huge
         for _, e in pairs(Enemies) do
-            local root, shielding = e.root, e.shielding
-            if root and root.Parent and shielding and shielding.Value then
-                if (root.Position - myPos).Magnitude <= Config.kickRange then
-                    lastKick = tick()
-                    pcall(function() kickRem:FireServer() end)
-                    break
+            local root = e.root
+            if root and root.Parent then
+                local d = (root.Position - myPos).Magnitude
+                if d <= Config.kickRange and d < closestDist then
+                    closest, closestDist = root, d
                 end
             end
+        end
+        if closest then
+            lastKick = tick()
+            pcall(function() kickRem:FireServer() end)
         end
     end
 end)
