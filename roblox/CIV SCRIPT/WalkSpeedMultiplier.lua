@@ -70,6 +70,10 @@ local ATTACK_ANIMS = {
     [111120820640543] = true, -- SickleSwing
 }
 
+-- Kick anim ID tracked separately — if enemy kicks while we're blocking, drop
+-- the shield immediately so we don't eat the slow.
+local KICK_ANIM_ID = 111619765264257
+
 -- ═══ Local character state ═════════════════════════════════════════════════
 
 local Me = {
@@ -114,19 +118,57 @@ end
 -- ═══ Enemy animator registry ═══════════════════════════════════════════════
 -- Rebuilt on spawn rather than searched every frame.
 
-local Enemies = {}          -- [Player] = { char, root, animator, shielding }
-local trackCache = setmetatable({}, { __mode = "k" })  -- [AnimationTrack] = bool
+local Enemies = {}          -- [Player] = { char, root, animator, shielding, humanoid, hpFill }
+local trackCache = setmetatable({}, { __mode = "k" })  -- [AnimationTrack] = trackId
 
-local function isAttackTrack(track)
+local function getTrackId(track)
     local cached = trackCache[track]
     if cached ~= nil then return cached end
-    local result = false
+    local id = 0
     pcall(function()
-        local id = tonumber(track.Animation.AnimationId:match("(%d+)%s*$"))
-        result = id ~= nil and ATTACK_ANIMS[id] == true
+        id = tonumber(track.Animation.AnimationId:match("(%d+)%s*$")) or 0
     end)
-    trackCache[track] = result
-    return result
+    trackCache[track] = id
+    return id
+end
+
+local function isAttackTrack(track)
+    local id = getTrackId(track)
+    return id ~= 0 and ATTACK_ANIMS[id] == true
+end
+
+local function isKickTrack(track)
+    return getTrackId(track) == KICK_ANIM_ID
+end
+
+local function makeHPBar(char)
+    local head = char:FindFirstChild("Head")
+    if not head then return nil end
+    local bb = Instance.new("BillboardGui")
+    bb.Name              = "CivHPBar"
+    bb.Size              = UDim2.fromOffset(90, 8)
+    -- StudsOffset (0, 3.5, 0) relative to Head clears the default name display
+    bb.StudsOffset       = Vector3.new(0, 3.5, 0)
+    bb.MaxDistance       = 60
+    bb.AlwaysOnTop       = false
+    bb.ResetOnSpawn      = false
+    bb.Adornee           = head
+    bb.Parent            = char  -- parented to char so it cleans up with the character
+
+    local bg = Instance.new("Frame")
+    bg.Size              = UDim2.new(1, 0, 1, 0)
+    bg.BackgroundColor3  = Color3.fromRGB(16, 16, 20)
+    bg.BorderSizePixel   = 1
+    bg.BorderColor3      = Color3.fromRGB(36, 38, 50)
+    bg.Parent            = bb
+
+    local fill = Instance.new("Frame")
+    fill.Size            = UDim2.new(1, 0, 1, 0)
+    fill.BackgroundColor3 = Color3.fromRGB(0, 210, 90)
+    fill.BorderSizePixel = 0
+    fill.Parent          = bg
+
+    return fill
 end
 
 local function bindEnemyChar(p, char)
@@ -137,12 +179,14 @@ local function bindEnemyChar(p, char)
     task.spawn(function()
         local hum = char:WaitForChild("Humanoid", 10)
         if not hum or Enemies[p] ~= entry then return end
+        entry.humanoid = hum
         entry.animator = hum:FindFirstChildOfClass("Animator") or hum:WaitForChild("Animator", 5)
         entry.root     = char:FindFirstChild("HumanoidRootPart") or char:WaitForChild("HumanoidRootPart", 5)
         local pvpFolder = char:WaitForChild("Pvp", 10)
         if pvpFolder and Enemies[p] == entry then
             entry.shielding = pvpFolder:FindFirstChild("Shielding")
         end
+        entry.hpFill = makeHPBar(char)
     end)
 end
 
@@ -244,17 +288,22 @@ RunService.RenderStepped:Connect(function()
 
     local myPos = Me.root.Position
     local threats = 0
+    local incomingKick = false
 
     for p, e in pairs(Enemies) do
         local root, animator = e.root, e.animator
         if root and animator and root.Parent then
-            if (root.Position - myPos).Magnitude <= Config.blockRange then
+            local dist = (root.Position - myPos).Magnitude
+            if dist <= Config.blockRange then
                 local ok, tracks = pcall(animator.GetPlayingAnimationTracks, animator)
                 if ok then
                     for _, track in ipairs(tracks) do
-                        if track.IsPlaying and isAttackTrack(track) then
-                            threats += 1
-                            break
+                        if track.IsPlaying then
+                            if isAttackTrack(track) then
+                                threats += 1
+                            elseif isKickTrack(track) and dist <= Config.kickRange + 4 then
+                                incomingKick = true
+                            end
                         end
                     end
                 end
@@ -263,7 +312,12 @@ RunService.RenderStepped:Connect(function()
     end
 
     threatCount = threats
-    Shield.set(threats > 0)
+    -- Drop shield if a kick is incoming — blocking a kick gives the slow debuff
+    if incomingKick and Shield.actual then
+        Shield.set(false)
+    else
+        Shield.set(threats > 0)
+    end
 end)
 
 -- ═══ Auto kick ═════════════════════════════════════════════════════════════
@@ -786,6 +840,22 @@ end)
 task.spawn(function()
     while task.wait(1) do
         if not screen.Parent then parentGui() end
+    end
+end)
+
+-- HP bar update loop -------------------------------------------------------
+task.spawn(function()
+    while task.wait(0.1) do
+        for _, e in pairs(Enemies) do
+            local fill, hum = e.hpFill, e.humanoid
+            if fill and fill.Parent and hum and hum.Parent then
+                local pct = math.clamp(hum.Health / math.max(hum.MaxHealth, 1), 0, 1)
+                fill.Size = UDim2.new(pct, 0, 1, 0)
+                fill.BackgroundColor3 = pct > 0.4
+                    and Color3.fromRGB(0, 210, 90)
+                    or  Color3.fromRGB(255, 50, 50)
+            end
+        end
     end
 end)
 
