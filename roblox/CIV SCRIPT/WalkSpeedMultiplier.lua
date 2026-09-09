@@ -8,6 +8,7 @@ local Players           = game:GetService("Players")
 local RunService        = game:GetService("RunService")
 local UserInputService  = game:GetService("UserInputService")
 local CoreGui           = game:GetService("CoreGui")
+local SoundService      = game:GetService("SoundService")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
 local player    = Players.LocalPlayer
@@ -23,12 +24,17 @@ local Config = {
     speedMultiplier = 2,
     autoBlock       = false,
     autoKick        = false,
+    autoUnshield    = true,
+    autoFace        = true,
+    backpedal       = false,
+    sounds          = true,
     blockRange      = 18,
     kickRange       = 14,
     kickCooldown    = 1.0,
     keyPanel        = Enum.KeyCode.RightShift,
     keyBlock        = Enum.KeyCode.B,
     keyKick         = Enum.KeyCode.K,
+    keyPanic        = Enum.KeyCode.RightControl,
 }
 
 local SETTINGS_PATH = "civccpanel_settings.json"
@@ -39,6 +45,10 @@ local function saveSettings()
             speedMultiplier = Config.speedMultiplier,
             blockRange      = Config.blockRange,
             kickRange       = Config.kickRange,
+            autoUnshield    = Config.autoUnshield,
+            autoFace        = Config.autoFace,
+            backpedal       = Config.backpedal,
+            sounds          = Config.sounds,
         }))
     end)
 end
@@ -54,6 +64,34 @@ local function loadSettings()
 end
 
 loadSettings()
+
+-- ═══ Audio cues ════════════════════════════════════════════════════════════
+-- Two engine-shipped sounds, pitch-shifted into three distinct tones. Parented
+-- to SoundService so they play non-positionally and survive respawns.
+
+local Sfx = {}
+do
+    local function mk(id, vol, speed)
+        local s = Instance.new("Sound")
+        s.SoundId       = id
+        s.Volume        = vol
+        s.PlaybackSpeed = speed
+        s.Parent        = SoundService
+        return s
+    end
+
+    local tones = {
+        up   = mk("rbxasset://sounds/electronicpingshort.wav", 0.45, 1.0),  -- shield raised
+        warn = mk("rbxasset://sounds/electronicpingshort.wav", 0.60, 1.7),  -- kick inbound
+        fail = mk("rbxasset://sounds/switch.wav",              0.85, 0.65), -- shield fault / panic
+    }
+
+    function Sfx.play(which)
+        if not Config.sounds then return end
+        local s = tones[which]
+        if s then pcall(function() s:Play() end) end
+    end
+end
 
 -- Attack animations (dumped from the place file). Kick is deliberately absent —
 -- it shatters shields, so blocking into one is worse than eating it.
@@ -91,24 +129,62 @@ local function inCombat()  return Me.combat  and Me.combat.Value  or false end
 local function isKnocked() return Me.knocked and Me.knocked.Value or false end
 local function alive()     return Me.humanoid and Me.humanoid.Health > 0 end
 
+-- ═══ Facing ════════════════════════════════════════════════════════════════
+-- The shield only absorbs from the front arc. A swing that connects with our
+-- back or flank bypasses it entirely, which is why blocks "register" as damage.
+-- Rotation-only: position is read from the current frame and written back
+-- unchanged, so nothing here produces displacement for the server to reject.
+
+local rotationHeld = false
+
+local function faceThreat(root)
+    if not (Me.root and Me.humanoid and root and root.Parent) then return end
+    local myPos = Me.root.Position
+    local tp    = root.Position
+    local flat  = Vector3.new(tp.X, myPos.Y, tp.Z)   -- yaw only, no pitch
+    if (flat - myPos).Magnitude < 0.1 then return end
+    if not rotationHeld then
+        Me.humanoid.AutoRotate = false
+        rotationHeld = true
+    end
+    Me.root.CFrame = CFrame.lookAt(myPos, flat)
+end
+
+local function releaseRotation()
+    if not rotationHeld then return end
+    rotationHeld = false
+    if Me.humanoid then Me.humanoid.AutoRotate = true end
+end
+
 -- ═══ Shield driver ═════════════════════════════════════════════════════════
 -- Shield is a RemoteFunction: InvokeServer yields. Firing it from multiple
 -- places lets calls overlap and land out of order, which is what made the
 -- shield flicker. One worker owns the remote and converges actual -> desired.
 
-local Shield = { desired = false, actual = false, busy = false }
+local Shield = { desired = false, actual = false, busy = false, faulted = false }
 
 function Shield.set(state)
     Shield.desired = state
     if Shield.busy or Shield.actual == Shield.desired then return end
     Shield.busy = true
     task.spawn(function()
+        local fails = 0
         while Shield.actual ~= Shield.desired do
             local target = Shield.desired
+            local sent   = tick()
             local ok = pcall(function() shieldRem:InvokeServer(target) end)
             if ok then
-                Shield.actual = target
+                Shield.actual  = target
+                Shield.faulted = false
+                fails = 0
+                -- A raise that took longer than a swing windup is a miss, not a block
+                if target and tick() - sent < 0.25 then Sfx.play("up") end
             else
+                fails += 1
+                if fails == 2 then
+                    Shield.faulted = true
+                    Sfx.play("fail")
+                end
                 task.wait(0.1)
             end
         end
@@ -197,9 +273,11 @@ local function bindEnemyChar(p, char)
                 if not (entry.root and Me.root) then return end
                 local dist = (entry.root.Position - Me.root.Position).Magnitude
                 if isAttackTrack(track) and dist <= Config.blockRange then
+                    if Config.autoFace then faceThreat(entry.root) end
                     Shield.set(true)
                 elseif isKickTrack(track) and dist <= Config.kickRange + 4 then
-                    if Shield.actual then Shield.set(false) end
+                    Sfx.play("warn")
+                    if Config.autoUnshield and Shield.actual then Shield.set(false) end
                 end
             end)
         end
@@ -252,6 +330,8 @@ local function bindCharacter(char)
     Me.lastWrite  = nil
     Shield.actual  = false
     Shield.desired = false
+    Shield.faulted = false
+    rotationHeld   = false   -- new humanoid, old AutoRotate lock is meaningless
 
     if speedConn then speedConn:Disconnect(); speedConn = nil end
 
@@ -312,17 +392,21 @@ end)
 -- there is no counter to drift out of sync.
 
 local threatCount = 0
+local threatRoot  = nil   -- root of the closest enemy currently mid-attack
 
 RunService.RenderStepped:Connect(function()
     if not Config.autoBlock or not alive() or isKnocked() or not Me.root then
         threatCount = 0
+        threatRoot  = nil
+        releaseRotation()
         Shield.set(false)
         return
     end
 
     local myPos = Me.root.Position
     local threats = 0
-    local incomingKick = false
+    local nearest, nearestDist = nil, math.huge
+    local incomingKick, kickRoot = false, nil
 
     for p, e in pairs(Enemies) do
         local root, animator = e.root, e.animator
@@ -335,8 +419,11 @@ RunService.RenderStepped:Connect(function()
                         if track.IsPlaying then
                             if isAttackTrack(track) then
                                 threats += 1
+                                if dist < nearestDist then
+                                    nearest, nearestDist = root, dist
+                                end
                             elseif isKickTrack(track) and dist <= Config.kickRange + 4 then
-                                incomingKick = true
+                                incomingKick, kickRoot = true, root
                             end
                         end
                     end
@@ -346,12 +433,33 @@ RunService.RenderStepped:Connect(function()
     end
 
     threatCount = threats
-    -- Drop shield if a kick is incoming — blocking a kick gives the slow debuff
-    if incomingKick and Shield.actual then
+    threatRoot  = nearest or kickRoot
+
+    -- Turn into whatever is threatening us, kick included — facing a kicker is
+    -- still better than eating it sideways.
+    if Config.autoFace and threatRoot then
+        faceThreat(threatRoot)
+    else
+        releaseRotation()
+    end
+
+    if incomingKick and Config.autoUnshield and Shield.actual then
         Shield.set(false)
     else
         Shield.set(threats > 0)
     end
+end)
+
+-- Backpedal runs on Heartbeat so it lands after the control scripts have set
+-- their move vector for the frame. Off by default: this writes displacement.
+RunService.Heartbeat:Connect(function()
+    if not Config.backpedal or not Config.autoBlock then return end
+    if not threatRoot or not threatRoot.Parent then return end
+    if not alive() or isKnocked() or not (Me.root and Me.humanoid) then return end
+    local away = Me.root.Position - threatRoot.Position
+    away = Vector3.new(away.X, 0, away.Z)
+    if away.Magnitude < 0.1 then return end
+    Me.humanoid:Move(away.Unit, false)
 end)
 
 -- Debug: print unrecognized anim IDs from nearby enemies (remove once anim table is complete)
@@ -406,7 +514,7 @@ end)
 
 -- ═══ GUI ═══════════════════════════════════════════════════════════════════
 
-local PANEL_W, PANEL_H = 256, 350
+local PANEL_W, PANEL_H = 256, 480
 
 local COL = {
     bg      = Color3.fromRGB(8, 9, 12),
@@ -600,11 +708,12 @@ divider(86)
 -- Combat ------------------------------------------------------------------
 sectionLabel("COMBAT", 96)
 
-local toggles = {}
+local toggles  = {}   -- [KeyCode] = flip fn
+local renderers = {}  -- every toggle's render fn, replayed after a panic
 
 local function makeToggle(name, key, y, get, set)
     local btn = Instance.new("TextButton")
-    btn.Size             = UDim2.new(1, -18, 0, 34)
+    btn.Size             = UDim2.new(1, -18, 0, 32)
     btn.Position         = UDim2.fromOffset(9, y)
     btn.BackgroundColor3 = COL.field
     btn.BorderSizePixel  = 1
@@ -615,7 +724,7 @@ local function makeToggle(name, key, y, get, set)
 
     -- Left status stripe that appears when ON
     local activeBar = Instance.new("Frame")
-    activeBar.Size             = UDim2.fromOffset(3, 34)
+    activeBar.Size             = UDim2.fromOffset(3, 32)
     activeBar.BackgroundColor3 = COL.on
     activeBar.BorderSizePixel  = 0
     activeBar.Visible          = false
@@ -671,6 +780,54 @@ local function makeToggle(name, key, y, get, set)
     btn.MouseButton1Click:Connect(flip)
     render()
     toggles[key] = flip
+    renderers[#renderers + 1] = render
+    return btn
+end
+
+-- Half-width chip for the secondary options. Same visual language, no keybind.
+local function makeChip(name, x, y, w, get, set)
+    local btn = Instance.new("TextButton")
+    btn.Size             = UDim2.fromOffset(w, 32)
+    btn.Position         = UDim2.fromOffset(x, y)
+    btn.BackgroundColor3 = COL.field
+    btn.BorderSizePixel  = 1
+    btn.BorderColor3     = COL.line
+    btn.Text             = ""
+    btn.AutoButtonColor  = false
+    btn.Parent           = body
+
+    local activeBar = Instance.new("Frame")
+    activeBar.Size             = UDim2.fromOffset(3, 32)
+    activeBar.BackgroundColor3 = COL.on
+    activeBar.BorderSizePixel  = 0
+    activeBar.Visible          = false
+    activeBar.Parent           = btn
+
+    local lbl = Instance.new("TextLabel")
+    lbl.Size                   = UDim2.new(1, -14, 1, 0)
+    lbl.Position               = UDim2.fromOffset(10, 0)
+    lbl.BackgroundTransparency = 1
+    lbl.Text                   = name
+    lbl.TextColor3             = COL.dim
+    lbl.Font                   = Enum.Font.GothamBold
+    lbl.TextSize               = 10
+    lbl.TextXAlignment         = Enum.TextXAlignment.Left
+    lbl.Parent                 = btn
+
+    local function render()
+        local on = get()
+        btn.BorderColor3  = on and COL.on or COL.line
+        activeBar.Visible = on
+        lbl.TextColor3    = on and COL.text or COL.dim
+    end
+
+    btn.MouseButton1Click:Connect(function()
+        set(not get())
+        render()
+        saveSettings()
+    end)
+    render()
+    renderers[#renderers + 1] = render
     return btn
 end
 
@@ -678,12 +835,46 @@ makeToggle("Auto Block", Config.keyBlock, 114,
     function() return Config.autoBlock end,
     function(v)
         Config.autoBlock = v
-        if not v then Shield.set(false) end
+        if not v then
+            Shield.set(false)
+            releaseRotation()
+            Shield.faulted = false
+        end
     end)
 
-makeToggle("Auto Kick", Config.keyKick, 154,
+makeToggle("Auto Kick", Config.keyKick, 150,
     function() return Config.autoKick end,
     function(v) Config.autoKick = v end)
+
+divider(194)
+
+-- Assist ------------------------------------------------------------------
+sectionLabel("ASSIST", 204)
+
+local CHIP_W = 114
+makeChip("UNSHIELD", 9, 222, CHIP_W,
+    function() return Config.autoUnshield end,
+    function(v) Config.autoUnshield = v end)
+
+makeChip("FACE", 129, 222, CHIP_W,
+    function() return Config.autoFace end,
+    function(v)
+        Config.autoFace = v
+        if not v then releaseRotation() end
+    end)
+
+makeChip("BACKPEDAL", 9, 258, CHIP_W,
+    function() return Config.backpedal end,
+    function(v) Config.backpedal = v end)
+
+makeChip("SOUND", 129, 258, CHIP_W,
+    function() return Config.sounds end,
+    function(v) Config.sounds = v end)
+
+divider(300)
+
+-- Tuning ------------------------------------------------------------------
+sectionLabel("TUNING", 310)
 
 -- Sliders -----------------------------------------------------------------
 local function makeSlider(name, y, minV, maxV, getV, setV)
@@ -749,20 +940,20 @@ local function makeSlider(name, y, minV, maxV, getV, setV)
     render()
 end
 
-makeSlider("Block range", 200, 6, 40,
+makeSlider("Block range", 328, 6, 40,
     function() return Config.blockRange end,
     function(v) Config.blockRange = v end)
 
-makeSlider("Kick range", 238, 6, 30,
+makeSlider("Kick range", 366, 6, 30,
     function() return Config.kickRange end,
     function(v) Config.kickRange = v end)
 
-divider(272)
+divider(402)
 
 -- Status strip ------------------------------------------------------------
 local statusStrip = Instance.new("Frame")
 statusStrip.Size             = UDim2.new(1, -18, 0, 30)
-statusStrip.Position         = UDim2.fromOffset(9, 280)
+statusStrip.Position         = UDim2.fromOffset(9, 410)
 statusStrip.BackgroundColor3 = COL.field
 statusStrip.BorderSizePixel  = 1
 statusStrip.BorderColor3     = COL.line
@@ -892,9 +1083,32 @@ do
     end)
 end
 
+-- Failsafe ----------------------------------------------------------------
+-- Kills every active behaviour and returns the character to stock state in one
+-- keypress: features off, shield down, rotation released, speed back to base.
+
+local function panic()
+    Config.autoBlock       = false
+    Config.autoKick        = false
+    Config.backpedal       = false
+    Config.speedMultiplier = 1
+    speedBox.Text          = "1"
+    Shield.set(false)
+    Shield.faulted         = false
+    releaseRotation()
+    applySpeed()
+    Sfx.play("fail")
+    for _, render in ipairs(renderers) do render() end
+    saveSettings()
+end
+
 -- Keybinds ----------------------------------------------------------------
 UserInputService.InputBegan:Connect(function(input, processed)
     if processed or UserInputService:GetFocusedTextBox() then return end
+    if input.KeyCode == Config.keyPanic then
+        panic()
+        return
+    end
     if input.KeyCode == Config.keyPanel then
         togglePanel()
         return
@@ -938,6 +1152,8 @@ task.spawn(function()
         local text, colour
         if not alive() then
             text, colour = "DEAD", COL.dim
+        elseif Shield.faulted then
+            text, colour = "SHIELD FAULT", COL.alert
         elseif isKnocked() then
             text, colour = "KNOCKED", COL.alert
         elseif Shield.actual then
