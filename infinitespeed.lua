@@ -29,29 +29,63 @@ local function patchTune(car)
     end)
 end
 
--- velocity preservation: keeps car speed when lifting throttle
-local _bv = nil
+-- override ACS BodyVelocity cap and preserve speed
+local _bv, _lastCar = nil, nil
+
+local function getCarRoot(car)
+    return (car.PrimaryPart)
+        or car:FindFirstChild("Chassis")
+        or car:FindFirstChild("Body")
+        or car:FindFirstChildWhichIsA("BasePart")
+end
+
 RS.Heartbeat:Connect(function()
     pcall(function()
         local char = lp.Character
-        if not char then _bv = nil; return end
+        if not char then _bv = nil; _lastCar = nil; return end
         local seat = char:FindFirstChildOfClass("VehicleSeat")
-        if not seat then _bv = nil; return end
-        local root = seat.Parent and seat.Parent:FindFirstChild("Body")
-                  or seat.Parent and seat.Parent:FindFirstChild("Chassis")
-                  or seat  -- fallback to the seat itself
-        -- inject a BodyVelocity once, keep it pointing current direction
+        if not seat then _bv = nil; _lastCar = nil; return end
+        local car  = seat.Parent
+        local root = getCarRoot(car)
+        if not root then return end
+
+        -- neuter every BodyVelocity ACS owns so they can't clamp us
+        if car ~= _lastCar then
+            _lastCar = car
+            for _, v in ipairs(car:GetDescendants()) do
+                if v:IsA("BodyVelocity") then
+                    v.MaxForce = Vector3.new(0, 0, 0)  -- disarm ACS's BV
+                end
+            end
+            -- watch for any BVs ACS adds later
+            car.DescendantAdded:Connect(function(d)
+                if d:IsA("BodyVelocity") and d ~= _bv then
+                    task.defer(function()
+                        pcall(function() d.MaxForce = Vector3.new(0,0,0) end)
+                    end)
+                end
+            end)
+        end
+
+        -- our own BV with max priority
         if not _bv or not _bv.Parent then
-            _bv = Instance.new("BodyVelocity")
-            _bv.MaxForce = Vector3.new(1e6, 0, 1e6)  -- no vertical force
-            _bv.P        = 1e4
+            _bv          = Instance.new("BodyVelocity")
+            _bv.Name     = "_ISbv"
+            _bv.MaxForce = Vector3.new(1e9, 0, 1e9)
+            _bv.P        = 1e9
             _bv.Parent   = root
         end
+
         local vel = root.AssemblyLinearVelocity
         local spd = vel.Magnitude
-        -- only preserve if moving (don't lock to 0 when parked)
-        if spd > 0.5 then
-            _bv.Velocity = vel  -- maintain exact current velocity vector
+        local wDown = UIS:IsKeyDown(Enum.KeyCode.W) or UIS:IsKeyDown(Enum.KeyCode.Up)
+
+        if wDown and spd > 1 then
+            -- accelerate in current look direction with no cap
+            local dir = (ws.CurrentCamera.CFrame.LookVector * Vector3.new(1,0,1)).Unit
+            _bv.Velocity = dir * math.max(spd, 200)  -- at least push forward
+        elseif spd > 0.5 then
+            _bv.Velocity = vel  -- hold current speed (no decel)
         else
             _bv.Velocity = Vector3.zero
         end
