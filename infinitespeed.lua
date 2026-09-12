@@ -1,17 +1,20 @@
 -- infinitespeed.lua
 -- Sets MaxSpeed = 1e9 on every VehicleSeat (A-Chassis + native seats)
 -- and patches A-Chassis Tune modules so the chassis script doesn't re-clamp.
+-- Includes draggable speedometer HUD.
 
-local SPEED = 1e9
-local ws    = game:GetService("Workspace")
+local SPEED  = 1e9
+local ws     = game:GetService("Workspace")
+local lp     = game:GetService("Players").LocalPlayer
+local UIS    = game:GetService("UserInputService")
+local RS     = game:GetService("RunService")
 
--- patch A-Chassis Tune table in the required module cache
+-- ── MaxSpeed patching ─────────────────────────────────────────────────────────
+
 local function patchTune(car)
-    -- ACS tune is usually named "A-Chassis Tune" or "Tune" directly in the car
     local tune = car:FindFirstChild("A-Chassis Tune", true)
                or car:FindFirstChild("Tune", true)
     if not tune then return end
-    -- executor getcustomasset / getreg trick to get required module table
     pcall(function()
         local tbl = require(tune)
         if type(tbl) == "table" and tbl.MaxSpeed ~= nil then
@@ -20,7 +23,6 @@ local function patchTune(car)
     end)
 end
 
--- patch every VehicleSeat on a given instance + its Tune module if it's a car
 local function patchSeats(inst)
     for _, v in ipairs(inst:GetDescendants()) do
         if v:IsA("VehicleSeat") then
@@ -30,17 +32,92 @@ local function patchSeats(inst)
     end
 end
 
--- initial pass
 patchSeats(ws)
 
--- catch newly added cars / seats
 ws.DescendantAdded:Connect(function(d)
     if d:IsA("VehicleSeat") then
-        task.defer(function()  -- defer so parent is set
+        task.defer(function()
             pcall(function() d.MaxSpeed = SPEED end)
             patchTune(d.Parent or ws)
         end)
     end
+end)
+
+-- ── Speedometer GUI ───────────────────────────────────────────────────────────
+
+local cg = game:GetService("CoreGui")
+local screen = Instance.new("ScreenGui")
+screen.Name         = "_SpeedoGui"
+screen.ResetOnSpawn = false
+screen.DisplayOrder = 9999
+pcall(function() screen.Parent = cg end)
+if screen.Parent ~= cg then screen.Parent = lp:WaitForChild("PlayerGui") end
+
+local frame = Instance.new("Frame")
+frame.Size             = UDim2.new(0, 120, 0, 44)
+frame.Position         = UDim2.new(0.5, -60, 1, -70)
+frame.BackgroundColor3 = Color3.fromRGB(14, 14, 18)
+frame.BorderSizePixel  = 0
+frame.Active           = true
+frame.Parent           = screen
+Instance.new("UICorner", frame).CornerRadius = UDim.new(0, 6)
+local stroke = Instance.new("UIStroke", frame)
+stroke.Color = Color3.fromRGB(45, 45, 55); stroke.Thickness = 1
+
+local speedLbl = Instance.new("TextLabel", frame)
+speedLbl.Size                 = UDim2.new(1, 0, 0.55, 0)
+speedLbl.Position             = UDim2.new(0, 0, 0, 4)
+speedLbl.BackgroundTransparency = 1
+speedLbl.Text                 = "0"
+speedLbl.TextColor3           = Color3.fromRGB(240, 240, 240)
+speedLbl.TextSize             = 20
+speedLbl.Font                 = Enum.Font.GothamBold
+speedLbl.TextXAlignment       = Enum.TextXAlignment.Center
+
+local unitLbl = Instance.new("TextLabel", frame)
+unitLbl.Size                  = UDim2.new(1, 0, 0.35, 0)
+unitLbl.Position              = UDim2.new(0, 0, 0.62, 0)
+unitLbl.BackgroundTransparency = 1
+unitLbl.Text                  = "SPS"
+unitLbl.TextColor3            = Color3.fromRGB(80, 80, 95)
+unitLbl.TextSize              = 11
+unitLbl.Font                  = Enum.Font.Code
+unitLbl.TextXAlignment        = Enum.TextXAlignment.Center
+
+-- drag
+local drag, ds, sp = false, nil, nil
+frame.InputBegan:Connect(function(i)
+    if i.UserInputType == Enum.UserInputType.MouseButton1 then
+        drag = true; ds = i.Position; sp = frame.Position
+    end
+end)
+frame.InputEnded:Connect(function(i)
+    if i.UserInputType == Enum.UserInputType.MouseButton1 then drag = false end
+end)
+UIS.InputChanged:Connect(function(i)
+    if drag and i.UserInputType == Enum.UserInputType.MouseMovement then
+        local d = i.Position - ds
+        frame.Position = UDim2.new(sp.X.Scale, sp.X.Offset + d.X, sp.Y.Scale, sp.Y.Offset + d.Y)
+    end
+end)
+
+-- speed readout: use VehicleSeat velocity when seated, else HRP
+RS.Heartbeat:Connect(function()
+    local spd = 0
+    pcall(function()
+        local char = lp.Character
+        if not char then return end
+        local hrp = char:FindFirstChild("HumanoidRootPart")
+        if not hrp then return end
+        -- prefer the seat's assembly velocity if in a vehicle
+        local seat = char:FindFirstChildOfClass("Seat") or char:FindFirstChildOfClass("VehicleSeat")
+        if seat then
+            spd = math.floor(seat.AssemblyLinearVelocity.Magnitude)
+        else
+            spd = math.floor(hrp.AssemblyLinearVelocity.Magnitude)
+        end
+    end)
+    speedLbl.Text = tostring(spd)
 end)
 
 print("[infinitespeed] done — MaxSpeed = " .. SPEED)
