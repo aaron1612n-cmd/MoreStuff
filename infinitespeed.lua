@@ -17,11 +17,46 @@ local function patchTune(car)
     if not tune then return end
     pcall(function()
         local tbl = require(tune)
-        if type(tbl) == "table" and tbl.MaxSpeed ~= nil then
-            tbl.MaxSpeed = SPEED
+        if type(tbl) ~= "table" then return end
+        if tbl.MaxSpeed  ~= nil then tbl.MaxSpeed  = SPEED end
+        -- zero all deceleration sources
+        for _, k in ipairs({
+            "AeroDrag","CorneringDrag","EngineBrake","RollResist",
+            "BrakePower","ParkBrake","Drag","FrictionCoef",
+        }) do
+            if tbl[k] ~= nil then tbl[k] = 0 end
         end
     end)
 end
+
+-- velocity preservation: keeps car speed when lifting throttle
+local _bv = nil
+RS.Heartbeat:Connect(function()
+    pcall(function()
+        local char = lp.Character
+        if not char then _bv = nil; return end
+        local seat = char:FindFirstChildOfClass("VehicleSeat")
+        if not seat then _bv = nil; return end
+        local root = seat.Parent and seat.Parent:FindFirstChild("Body")
+                  or seat.Parent and seat.Parent:FindFirstChild("Chassis")
+                  or seat  -- fallback to the seat itself
+        -- inject a BodyVelocity once, keep it pointing current direction
+        if not _bv or not _bv.Parent then
+            _bv = Instance.new("BodyVelocity")
+            _bv.MaxForce = Vector3.new(1e6, 0, 1e6)  -- no vertical force
+            _bv.P        = 1e4
+            _bv.Parent   = root
+        end
+        local vel = root.AssemblyLinearVelocity
+        local spd = vel.Magnitude
+        -- only preserve if moving (don't lock to 0 when parked)
+        if spd > 0.5 then
+            _bv.Velocity = vel  -- maintain exact current velocity vector
+        else
+            _bv.Velocity = Vector3.zero
+        end
+    end)
+end)
 
 local function patchSeats(inst)
     for _, v in ipairs(inst:GetDescendants()) do
