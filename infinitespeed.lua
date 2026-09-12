@@ -29,45 +29,40 @@ local function patchTune(car)
     end)
 end
 
--- override ACS BodyVelocity cap and preserve speed
-local _bv, _lastCar = nil, nil
+-- override ACS speed cap and preserve speed
+local _bv, _lv, _lastCar = nil, nil, nil
 
 local function getCarRoot(car)
-    return (car.PrimaryPart)
+    return car.PrimaryPart
         or car:FindFirstChild("Chassis")
         or car:FindFirstChild("Body")
         or car:FindFirstChildWhichIsA("BasePart")
 end
 
+local ZERO3 = Vector3.zero
+
 RS.Heartbeat:Connect(function()
     pcall(function()
         local char = lp.Character
-        if not char then _bv = nil; _lastCar = nil; return end
+        if not char then _bv=nil; _lv=nil; _lastCar=nil; return end
         local seat = char:FindFirstChildOfClass("VehicleSeat")
-        if not seat then _bv = nil; _lastCar = nil; return end
+        if not seat then _bv=nil; _lv=nil; _lastCar=nil; return end
         local car  = seat.Parent
         local root = getCarRoot(car)
         if not root then return end
 
-        -- neuter every BodyVelocity ACS owns so they can't clamp us
-        if car ~= _lastCar then
-            _lastCar = car
-            for _, v in ipairs(car:GetDescendants()) do
+        -- every frame: neuter ALL ACS velocity constraints so they can't cap us
+        for _, v in ipairs(car:GetDescendants()) do
+            if v ~= _bv and v ~= _lv then
                 if v:IsA("BodyVelocity") then
-                    v.MaxForce = Vector3.new(0, 0, 0)  -- disarm ACS's BV
+                    pcall(function() v.MaxForce = ZERO3 end)
+                elseif v:IsA("LinearVelocity") then
+                    pcall(function() v.MaxForce = 0 end)
                 end
             end
-            -- watch for any BVs ACS adds later
-            car.DescendantAdded:Connect(function(d)
-                if d:IsA("BodyVelocity") and d ~= _bv then
-                    task.defer(function()
-                        pcall(function() d.MaxForce = Vector3.new(0,0,0) end)
-                    end)
-                end
-            end)
         end
 
-        -- our own BV with max priority
+        -- inject our BodyVelocity once
         if not _bv or not _bv.Parent then
             _bv          = Instance.new("BodyVelocity")
             _bv.Name     = "_ISbv"
@@ -80,14 +75,14 @@ RS.Heartbeat:Connect(function()
         local spd = vel.Magnitude
         local wDown = UIS:IsKeyDown(Enum.KeyCode.W) or UIS:IsKeyDown(Enum.KeyCode.Up)
 
-        if wDown and spd > 1 then
-            -- accelerate in current look direction with no cap
-            local dir = (ws.CurrentCamera.CFrame.LookVector * Vector3.new(1,0,1)).Unit
-            _bv.Velocity = dir * math.max(spd, 200)  -- at least push forward
+        if wDown then
+            local look = ws.CurrentCamera.CFrame.LookVector
+            local dir  = Vector3.new(look.X, 0, look.Z).Unit
+            _bv.Velocity = dir * math.max(spd + 5, 50)
         elseif spd > 0.5 then
-            _bv.Velocity = vel  -- hold current speed (no decel)
+            _bv.Velocity = vel
         else
-            _bv.Velocity = Vector3.zero
+            _bv.Velocity = ZERO3
         end
     end)
 end)
