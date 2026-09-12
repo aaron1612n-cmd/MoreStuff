@@ -45,13 +45,11 @@ end)
 
 -- ── Speedometer GUI ───────────────────────────────────────────────────────────
 
-local cg = game:GetService("CoreGui")
 local screen = Instance.new("ScreenGui")
 screen.Name         = "_SpeedoGui"
 screen.ResetOnSpawn = false
 screen.DisplayOrder = 9999
-pcall(function() screen.Parent = cg end)
-if screen.Parent ~= cg then screen.Parent = lp:WaitForChild("PlayerGui") end
+screen.Parent       = lp:WaitForChild("PlayerGui")
 
 local frame = Instance.new("Frame")
 frame.Size             = UDim2.new(0, 120, 0, 44)
