@@ -39,7 +39,14 @@ local function tune(d)
     end
 end
 for _, d in ipairs(workspace:GetDescendants()) do tune(d) end
-workspace.DescendantAdded:Connect(tune)
+-- re-running replaces the previous copy: drop its prompt hook and buttons
+local genv = getgenv()
+if genv._coinTestConn then genv._coinTestConn:Disconnect() end
+genv._coinTestConn = workspace.DescendantAdded:Connect(tune)
+for _, parent in ipairs({ game:GetService("CoreGui"), lp:FindFirstChildOfClass("PlayerGui") }) do
+    local old = parent and parent:FindFirstChild("_CoinTest")
+    if old then old:Destroy() end
+end
 
 local function root()
     return lp.Character and lp.Character:FindFirstChild("HumanoidRootPart")
