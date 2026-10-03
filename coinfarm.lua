@@ -4,6 +4,8 @@
   Only boxes owned by you are grabbed. Prompts are made instant (HoldDuration 0).
 --]]
 
+local VERSION = 10 -- bump on every update
+
 local Players = game:GetService("Players")
 local lp      = Players.LocalPlayer
 
@@ -194,5 +196,5 @@ local function makeButton(y, idle, kind)
     end)
 end
 
-makeButton(60,  "CHEST: TP + OPEN + GRAB",    KINDS.chest)
-makeButton(102, "PUFFBALL: TP + HARVEST + GRAB", KINDS.puffball)
+makeButton(60,  "v" .. VERSION .. "  CHEST: TP + OPEN + GRAB",    KINDS.chest)
+makeButton(102, "v" .. VERSION .. "  PUFFBALL: TP + HARVEST + GRAB", KINDS.puffball)
