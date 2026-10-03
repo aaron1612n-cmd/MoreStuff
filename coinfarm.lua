@@ -4,7 +4,8 @@
   Only boxes owned by you are grabbed. Prompts are made instant (HoldDuration 0).
 --]]
 
-local VERSION = 10 -- bump on every update
+local VERSION = 11 -- bump on every update
+local STEP, MAX_CELLS = 300, 80 -- stream-sweep grid spacing (studs) and max cells per click
 
 local Players = game:GetService("Players")
 local lp      = Players.LocalPlayer
@@ -21,7 +22,6 @@ local KINDS = {
     },
     puffball = {
         word = "puff",
-        spawnMarker = "puffspawn",
         isPrompt = function(d)
             if d.Name == "Grab" then return false end
             local txt = (d.ActionText .. d.ObjectText):lower()
@@ -108,20 +108,32 @@ local function run(kind)
 
     local cp, cpart = nearest(kind.isPrompt)
 
-    -- nothing loaded: if StreamingEnabled, ask the server to stream around known spawn markers, then look again
-    if not cp and workspace.StreamingEnabled and kind.spawnMarker then
-        local spots = {}
-        for _, d in ipairs(workspace:GetDescendants()) do
-            if d:IsA("BasePart") and d.Name:lower():find(kind.spawnMarker, 1, true) then spots[#spots + 1] = d.Position end
+    -- nothing loaded: with StreamingEnabled far parts don't exist on this client. Sweep a grid over the
+    -- map (extents taken from the top-level models), streaming each cell in and looking again, nearest cell first.
+    if not cp and workspace.StreamingEnabled then
+        local minX, maxX, minZ, maxZ = math.huge, -math.huge, math.huge, -math.huge
+        for _, c in ipairs(workspace:GetChildren()) do
+            local ok, pos = pcall(function()
+                return c:IsA("PVInstance") and c:GetPivot().Position or nil
+            end)
+            if ok and pos and not c:IsA("Terrain") and not Players:GetPlayerFromCharacter(c) then
+                minX, maxX = math.min(minX, pos.X), math.max(maxX, pos.X)
+                minZ, maxZ = math.min(minZ, pos.Z), math.max(maxZ, pos.Z)
+            end
         end
-        for i, pos in ipairs(spots) do
-            pcall(function() lp:RequestStreamAroundAsync(pos, 4) end)
+        local here, cells = root().Position, {}
+        for x = minX, maxX, STEP do
+            for z = minZ, maxZ, STEP do cells[#cells + 1] = Vector3.new(x, here.Y, z) end
+        end
+        table.sort(cells, function(p, q) return (p - here).Magnitude < (q - here).Magnitude end)
+        for i, pos in ipairs(cells) do
+            if i > MAX_CELLS then break end
+            pcall(function() lp:RequestStreamAroundAsync(pos, 1.5) end)
             cp, cpart = nearest(kind.isPrompt)
             if cp then break end
-            if i >= 25 then break end
         end
         if not cp then
-            diag = ("streaming=true, %d '%s' markers loaded"):format(#spots, kind.spawnMarker)
+            diag = ("swept %d/%d cells, nothing"):format(math.min(#cells, MAX_CELLS), #cells)
         end
     end
 
