@@ -48,6 +48,14 @@ local function nearest(want)
         if d:IsA("ProximityPrompt") and d.Enabled then
             local t = trioType(d)
             local isGrab = d.Name == "Grab"
+            -- world puffballs may not carry the name: also match the template signature
+            -- (prompt on a part with a ParticleEmitter) or harvest-ish prompt text
+            if not t and not isGrab then
+                local txt = (d.ActionText .. d.ObjectText):lower()
+                if d.Parent:FindFirstChildOfClass("ParticleEmitter") or txt:find("puff") or txt:find("harvest") then
+                    t = "puffball"
+                end
+            end
             if t and ((want == "grab") == isGrab) then
                 local part = partOf(d)
                 local dist = part and (part.Position - hrp.Position).Magnitude
