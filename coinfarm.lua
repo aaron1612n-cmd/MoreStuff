@@ -4,7 +4,7 @@
   Only boxes owned by you are grabbed. Prompts are made instant (HoldDuration 0).
 --]]
 
-local VERSION = 19 -- bump on every update
+local VERSION = 20 -- bump on every update
 local STEP, MAX_CELLS = 300, 12 -- stream-sweep grid spacing (studs) and cells per click (click again to continue)
 
 local Players = game:GetService("Players")
@@ -121,6 +121,15 @@ for _, parent in ipairs({ game:GetService("CoreGui"), lp:FindFirstChildOfClass("
             if c.Name == "_CoinTest" then c:Destroy() end
         end
     end
+end
+
+-- bridge logger: name=TRACE/RESULT, so Claude can see exactly how far a click got
+local function blog(name, text)
+    pcall(function()
+        local req = (syn and syn.request) or (http and http.request) or request or http_request
+        req({ Url = "http://127.0.0.1:7821", Method = "POST", Headers = { ["Content-Type"] = "application/json" },
+              Body = game:GetService("HttpService"):JSONEncode({ kind = "remote", name = name, path = "v" .. VERSION, remote_type = "log", args = { text } }) })
+    end)
 end
 
 local function root()
@@ -283,7 +292,9 @@ end
 local function trade()
     if not root() then return "no character" end
 
+    blog("TRACE", "trade: start")
     streamTo(HUFF.bell)
+    blog("TRACE", "trade: streamed huffencrag")
     local bell = station("Huffencrag", "BellRing")
     local prompt = bell and bell:FindFirstChildOfClass("ProximityPrompt")
     if not prompt then return "Huffencrag bell not loaded" end
@@ -292,7 +303,9 @@ local function trade()
     local before = {}
     for d in pairs(prompts) do if d.Name == "Grab" then before[d] = true end end
 
+    blog("TRACE", "trade: firing bell")
     fire(prompt, bell)
+    blog("TRACE", "trade: fired bell, coins " .. coins())
 
     -- the package shows up near BoxSpawn with a Grab prompt
     local gp, gpart
@@ -306,6 +319,7 @@ local function trade()
     end
     if not gp then return ("bought? coins %d -> %d, but no package Grab appeared"):format(c0, coins()) end
     local paid = c0 - coins()
+    blog("TRACE", "trade: grabbing package")
     fire(gp, gpart)
     task.wait(0.3)
 
@@ -339,15 +353,14 @@ local function makeButton(y, idle, kind)
     btn.Parent = screen
     Instance.new("UICorner", btn).CornerRadius = UDim.new(0, 5)
     btn.MouseButton1Click:Connect(function()
+        blog("TRACE", "click " .. idle .. " busy=" .. tostring(busy))
         if busy then return end
         busy = true
+        local mine = idle
+        task.delay(30, function() if busy then busy = false; btn.Text = mine; blog("TRACE", "watchdog freed a stuck run: " .. mine) end end)
         local ok, res = pcall(kind.run or run, kind)
         btn.Text = ok and res or ("error: " .. tostring(res))
-        pcall(function() -- also send every result to the bridge so Claude can read it
-            local req = (syn and syn.request) or (http and http.request) or request or http_request
-            req({ Url = "http://127.0.0.1:7821", Method = "POST", Headers = { ["Content-Type"] = "application/json" },
-                  Body = game:GetService("HttpService"):JSONEncode({ kind = "remote", name = "RESULT", path = "v" .. VERSION, remote_type = "result", args = { btn.Text } }) })
-        end)
+        blog("RESULT", btn.Text)
         warn("[coinfarm]", btn.Text)
         task.wait(3)
         btn.Text, busy = idle, false
