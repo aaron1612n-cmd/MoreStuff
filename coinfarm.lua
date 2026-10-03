@@ -4,8 +4,8 @@
   Only boxes owned by you are grabbed. Prompts are made instant (HoldDuration 0).
 --]]
 
-local VERSION = 15 -- bump on every update
-local STEP, MAX_CELLS = 300, 80 -- stream-sweep grid spacing (studs) and max cells per click
+local VERSION = 16 -- bump on every update
+local STEP, MAX_CELLS = 300, 12 -- stream-sweep grid spacing (studs) and cells per click (click again to continue)
 
 local Players = game:GetService("Players")
 local lp      = Players.LocalPlayer
@@ -104,8 +104,11 @@ genv._coinTestPauseConn = game:GetService("CoreGui").DescendantAdded:Connect(fun
     if d:IsA("TextLabel") then d:GetPropertyChangedSignal("Text"):Connect(function() pcall(hidePause, d) end) end
 end)
 for _, parent in ipairs({ game:GetService("CoreGui"), lp:FindFirstChildOfClass("PlayerGui") }) do
-    local old = parent and parent:FindFirstChild("_CoinTest")
-    if old then old:Destroy() end
+    if parent then
+        for _, c in ipairs(parent:GetChildren()) do
+            if c.Name == "_CoinTest" then c:Destroy() end
+        end
+    end
 end
 
 local function root()
@@ -183,14 +186,19 @@ local function run(kind)
             for z = minZ, maxZ, STEP do cells[#cells + 1] = Vector3.new(x, here.Y, z) end
         end
         table.sort(cells, function(p, q) return (p - here).Magnitude < (q - here).Magnitude end)
-        for i, pos in ipairs(cells) do
-            if i > MAX_CELLS then break end
-            pcall(function() lp:RequestStreamAroundAsync(pos, 1.5) end)
+        local from = (genv._coinSweepFrom or 0) % math.max(#cells, 1)
+        local done = 0
+        for i = 1, math.min(MAX_CELLS, #cells) do
+            local idx = (from + i - 1) % #cells + 1
+            pcall(function() lp:RequestStreamAroundAsync(cells[idx], 0.75) end)
+            task.wait(0.3) -- let the stream settle so the client doesn't stall
+            done = i
             cp, cpart = nearest(kind.isPrompt)
             if cp then break end
         end
+        genv._coinSweepFrom = from + done
         if not cp then
-            diag = ("swept %d/%d cells, nothing"):format(math.min(#cells, MAX_CELLS), #cells)
+            diag = ("swept %d-%d of %d cells, nothing. click again for the next batch"):format(from + 1, from + done, #cells)
         end
     end
 
