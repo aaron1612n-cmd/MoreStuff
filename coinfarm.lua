@@ -4,7 +4,7 @@
   Only boxes owned by you are grabbed. Prompts are made instant (HoldDuration 0).
 --]]
 
-local VERSION = 20 -- bump on every update
+local VERSION = 21 -- bump on every update
 local STEP, MAX_CELLS = 300, 12 -- stream-sweep grid spacing (studs) and cells per click (click again to continue)
 
 local Players = game:GetService("Players")
@@ -211,8 +211,8 @@ local function run(kind)
         local done = 0
         for i = 1, math.min(MAX_CELLS, #cells) do
             local idx = (from + i - 1) % #cells + 1
-            pcall(function() lp:RequestStreamAroundAsync(cells[idx], 0.75) end)
-            task.wait(0.3) -- let the stream settle so the client doesn't stall
+            task.spawn(pcall, function() lp:RequestStreamAroundAsync(cells[idx], 0.75) end)
+            task.wait(0.8) -- let the stream settle; the request itself can hang so it is never awaited
             done = i
             cp, cpart = nearest(kind.isPrompt)
             if cp then break end
@@ -274,7 +274,19 @@ local HUFF = { bell = Vector3.new(-11049, 730, -1960), spawn = Vector3.new(-1104
 local PELT = { sell = Vector3.new(10831, 1311, -121) }
 
 local function streamTo(pos)
-    pcall(function() lp:RequestStreamAroundAsync(pos, 3) end)
+    task.spawn(pcall, function() lp:RequestStreamAroundAsync(pos, 3) end)
+end
+
+-- stream toward pos and poll getter() until it returns something (or secs run out)
+local function streamUntil(pos, getter, secs)
+    streamTo(pos)
+    local t0 = os.clock()
+    local v = getter()
+    while not v and os.clock() - t0 < secs do
+        task.wait(0.25)
+        v = getter()
+    end
+    return v
 end
 
 local function station(town, part)
@@ -293,9 +305,8 @@ local function trade()
     if not root() then return "no character" end
 
     blog("TRACE", "trade: start")
-    streamTo(HUFF.bell)
-    blog("TRACE", "trade: streamed huffencrag")
-    local bell = station("Huffencrag", "BellRing")
+    local bell = streamUntil(HUFF.bell, function() return station("Huffencrag", "BellRing") end, 10)
+    blog("TRACE", "trade: huffencrag bell " .. tostring(bell))
     local prompt = bell and bell:FindFirstChildOfClass("ProximityPrompt")
     if not prompt then return "Huffencrag bell not loaded" end
 
@@ -324,8 +335,7 @@ local function trade()
     task.wait(0.3)
 
     -- carry it to Peltsden and stand on the sell part so the held box touches it
-    streamTo(PELT.sell)
-    local sell = station("Peltsden", "Sell")
+    local sell = streamUntil(PELT.sell, function() return station("Peltsden", "Sell") end, 3)
     local target = sell and (sell.CFrame * CFrame.new(0, 3, 0)) or CFrame.new(PELT.sell + Vector3.new(0, 3, 0))
     local c1 = coins()
     root().CFrame = target
