@@ -21,6 +21,15 @@ end)
 -- ── helpers ───────────────────────────────────────────────────────────────────
 -- wanted type of the nearest ancestor below Workspace named for the trio
 local function trioType(inst)
+    local info = inst.Parent and inst.Parent:FindFirstChild("Info")
+    if info then
+        for _, l in ipairs(info:GetDescendants()) do
+            if l:IsA("TextLabel") then
+                local txt = l.Text:lower():gsub("%s", "")
+                for k in pairs(WANT) do if txt:find(k, 1, true) then return k end end
+            end
+        end
+    end
     inst = inst.Parent
     while inst and inst ~= workspace do
         local n = inst.Name:lower()
@@ -40,7 +49,7 @@ local function root()
 end
 
 -- nearest enabled prompt of a wanted type; want = "grab" (Grab prompts) or "harvest" (any other prompt)
-local function nearest(want)
+local function nearest(want, loose)
     local hrp = root()
     if not hrp then return end
     local best, bestPart, bestDist, kind = nil, nil, math.huge, nil
@@ -56,6 +65,7 @@ local function nearest(want)
                     t = "puffball"
                 end
             end
+            if loose and isGrab then t = t or "box" end
             if t and ((want == "grab") == isGrab) then
                 local part = partOf(d)
                 local dist = part and (part.Position - hrp.Position).Magnitude
@@ -96,7 +106,7 @@ local function run()
         local t0 = os.clock()
         while os.clock() - t0 < 4 do
             task.wait(0.2)
-            local p, part = nearest("grab")
+            local p, part = nearest("grab", true)
             if p and (part.Position - at).Magnitude < 40 then
                 fire(p, part)
                 return "harvested (" .. name .. ") + grabbed " .. p.Parent:GetFullName()
