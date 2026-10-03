@@ -120,10 +120,25 @@ task.spawn(function()
             -- throttle spammy remotes to one post per path per 0.5s
             if lastSent[path] and now - lastSent[path] < 0.5 then return end
             lastSent[path] = now
-            post({ kind="remote", name=tostring(name), path=path, remote_type=tostring(kind) })
+            local a = {}
+            for i = 1, math.min(type(args) == "table" and #args or 0, 8) do
+                local v = args[i]
+                a[i] = typeof(v) == "Instance" and ("<" .. v.ClassName .. ">" .. v:GetFullName()) or tostring(v)
+            end
+            post({ kind="remote", name=tostring(name), path=path, remote_type=tostring(kind), args=a })
         end)
         return orig(kind, name, args, remote, ...)
     end
+end)
+
+-- ── Coin recon: log every coins change into the remote log so the earning remote shows up right before it ──
+task.spawn(function()
+    local coins = lp:WaitForChild("leaderstats"):WaitForChild("coins")
+    local last = coins.Value
+    coins.Changed:Connect(function(v)
+        post({ kind="remote", name="COIN_DELTA", path="leaderstats.coins", remote_type="delta", args={ (v - last > 0 and "+" or "") .. (v - last), "total=" .. v } })
+        last = v
+    end)
 end)
 
 -- ── Probe loop ────────────────────────────────────────────────────────────────
