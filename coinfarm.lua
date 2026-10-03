@@ -4,7 +4,7 @@
   Only boxes owned by you are grabbed. Prompts are made instant (HoldDuration 0).
 --]]
 
-local VERSION = 16 -- bump on every update
+local VERSION = 17 -- bump on every update
 local STEP, MAX_CELLS = 300, 12 -- stream-sweep grid spacing (studs) and cells per click (click again to continue)
 
 local Players = game:GetService("Players")
@@ -51,8 +51,20 @@ task.spawn(function()
     end
 end)
 -- "Gameplay Paused": stop it at the source (StreamingPauseMode), and also hide the overlay if it still shows
-pcall(function() workspace.StreamingPauseMode = Enum.StreamingPauseMode.Disabled end)
-pcall(function() sethiddenproperty(workspace, "StreamingPauseMode", Enum.StreamingPauseMode.Disabled) end)
+-- re-applied every 0.5s because the game/server can flip it back (blur + jitter come back when it does)
+local function noPause()
+    pcall(function() workspace.StreamingPauseMode = Enum.StreamingPauseMode.Disabled end)
+    pcall(function() sethiddenproperty(workspace, "StreamingPauseMode", Enum.StreamingPauseMode.Disabled) end)
+end
+noPause()
+local pauseGen = (getgenv()._coinPauseGen or 0) + 1
+getgenv()._coinPauseGen = pauseGen -- a re-run bumps this so the old loop exits
+task.spawn(function()
+    while getgenv()._coinPauseGen == pauseGen do
+        task.wait(0.5)
+        noPause()
+    end
+end)
 
 -- diagnostics to the bridge: did the pause-mode write stick, and what blur/pause UI exists right now
 task.spawn(function()
