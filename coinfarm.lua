@@ -4,7 +4,7 @@
   Only boxes owned by you are grabbed. Prompts are made instant (HoldDuration 0).
 --]]
 
-local VERSION = 12 -- bump on every update
+local VERSION = 13 -- bump on every update
 local STEP, MAX_CELLS = 300, 80 -- stream-sweep grid spacing (studs) and max cells per click
 
 local Players = game:GetService("Players")
@@ -36,12 +36,20 @@ local KINDS = {
     },
 }
 
-local function tune(d)
+-- every live ProximityPrompt, kept current by events so clicks never rescan the whole Workspace
+local prompts = {}
+local function track(d)
     if d:IsA("ProximityPrompt") then
+        prompts[d] = true
         d.HoldDuration, d.MaxActivationDistance, d.RequiresLineOfSight = 0, 1e9, false
     end
 end
-for _, d in ipairs(workspace:GetDescendants()) do tune(d) end
+task.spawn(function()
+    for i, d in ipairs(workspace:GetDescendants()) do
+        track(d)
+        if i % 3000 == 0 then task.wait() end -- yield so the initial scan doesn't hitch
+    end
+end)
 -- hide Roblox's "Gameplay Paused" overlay (it lives in CoreGui; hide the whole panel that holds the text)
 local function hidePause(d)
     if d:IsA("TextLabel") and d.Text:lower():find("gameplay paused", 1, true) then
@@ -55,7 +63,9 @@ for _, d in ipairs(game:GetService("CoreGui"):GetDescendants()) do pcall(hidePau
 -- re-running replaces the previous copy: drop its prompt hook and buttons
 local genv = getgenv()
 if genv._coinTestConn then genv._coinTestConn:Disconnect() end
-genv._coinTestConn = workspace.DescendantAdded:Connect(tune)
+genv._coinTestConn = workspace.DescendantAdded:Connect(track)
+if genv._coinTestRemConn then genv._coinTestRemConn:Disconnect() end
+genv._coinTestRemConn = workspace.DescendantRemoving:Connect(function(d) prompts[d] = nil end)
 if genv._coinTestPauseConn then genv._coinTestPauseConn:Disconnect() end
 genv._coinTestPauseConn = game:GetService("CoreGui").DescendantAdded:Connect(function(d)
     task.defer(pcall, hidePause, d) -- text is set after the label is parented
@@ -91,8 +101,8 @@ end
 local function nearest(pred)
     local hrp = root()
     local best, bestPart, bestDist = nil, nil, math.huge
-    for _, d in ipairs(workspace:GetDescendants()) do
-        if d:IsA("ProximityPrompt") and d.Enabled and pred(d) then
+    for d in pairs(prompts) do
+        if d.Enabled and pred(d) then
             local part = partOf(d)
             local dist = part and (part.Position - hrp.Position).Magnitude
             if dist and dist < bestDist then best, bestPart, bestDist = d, part, dist end
@@ -153,8 +163,8 @@ local function run(kind)
 
     if not cp then
         local seen = {}
-        for _, d in ipairs(workspace:GetDescendants()) do
-            if d:IsA("ProximityPrompt") and d.Name ~= "Grab" and (kind.isPrompt(d) or d.ActionText:lower():find(kind.word, 1, true)) then
+        for d in pairs(prompts) do
+            if d.Name ~= "Grab" and (kind.isPrompt(d) or d.ActionText:lower():find(kind.word, 1, true)) then
                 seen[#seen + 1] = d:GetFullName() .. " [" .. d.ActionText .. "] enabled=" .. tostring(d.Enabled)
             end
         end
@@ -167,8 +177,8 @@ local function run(kind)
 
     -- snapshot existing Grab prompts so the box this opens is the one that is new
     local before = {}
-    for _, d in ipairs(workspace:GetDescendants()) do
-        if d:IsA("ProximityPrompt") and d.Name == "Grab" then before[d] = true end
+    for d in pairs(prompts) do
+        if d.Name == "Grab" then before[d] = true end
     end
     fire(cp, cpart)
 
@@ -176,7 +186,8 @@ local function run(kind)
     while os.clock() - t0 < 6 do
         task.wait(0.2)
         local gp, gpart = nearest(function(d)
-            return d.Name == "Grab" and not before[d] and (partOf(d).Position - at).Magnitude < 80
+            local part = d.Name == "Grab" and not before[d] and partOf(d)
+            return part and (part.Position - at).Magnitude < 80
         end)
         if gp then
             fire(gp, gpart)
@@ -185,8 +196,8 @@ local function run(kind)
     end
     -- box may not be labelled as expected: report what Grab prompts of mine exist
     local mine = {}
-    for _, d in ipairs(workspace:GetDescendants()) do
-        if d:IsA("ProximityPrompt") and d.Name == "Grab" then
+    for d in pairs(prompts) do
+        if d.Name == "Grab" then
             local t = infoTexts(d.Parent)
             if t[3] == lp.Name then mine[#mine + 1] = table.concat(t, "/") end
         end
