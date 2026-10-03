@@ -4,7 +4,7 @@
   Only boxes owned by you are grabbed. Prompts are made instant (HoldDuration 0).
 --]]
 
-local VERSION = 13 -- bump on every update
+local VERSION = 14 -- bump on every update
 local STEP, MAX_CELLS = 300, 80 -- stream-sweep grid spacing (studs) and max cells per click
 
 local Players = game:GetService("Players")
@@ -50,12 +50,22 @@ task.spawn(function()
         if i % 3000 == 0 then task.wait() end -- yield so the initial scan doesn't hitch
     end
 end)
--- hide Roblox's "Gameplay Paused" overlay (it lives in CoreGui; hide the whole panel that holds the text)
+-- "Gameplay Paused": stop it at the source (StreamingPauseMode), and also hide the overlay if it still shows
+pcall(function() workspace.StreamingPauseMode = Enum.StreamingPauseMode.Disabled end)
+pcall(function() sethiddenproperty(workspace, "StreamingPauseMode", Enum.StreamingPauseMode.Disabled) end)
+
+local function matchPause(d)
+    return (d:IsA("TextLabel") or d:IsA("TextButton")) and d.Text:lower():find("paused", 1, true) ~= nil
+end
 local function hidePause(d)
-    if d:IsA("TextLabel") and d.Text:lower():find("gameplay paused", 1, true) then
-        local g = d
-        while g.Parent and not g.Parent:IsA("ScreenGui") do g = g.Parent end
-        if g:IsA("GuiObject") then g.Visible = false end
+    if not matchPause(d) then return end
+    local g = d
+    while g.Parent and not g.Parent:IsA("ScreenGui") do g = g.Parent end
+    if g:IsA("GuiObject") then
+        g.Visible = false
+        g:GetPropertyChangedSignal("Visible"):Connect(function() -- Roblox flips it back on: keep it off
+            if g.Visible then g.Visible = false end
+        end)
     end
 end
 for _, d in ipairs(game:GetService("CoreGui"):GetDescendants()) do pcall(hidePause, d) end
@@ -69,6 +79,7 @@ genv._coinTestRemConn = workspace.DescendantRemoving:Connect(function(d) prompts
 if genv._coinTestPauseConn then genv._coinTestPauseConn:Disconnect() end
 genv._coinTestPauseConn = game:GetService("CoreGui").DescendantAdded:Connect(function(d)
     task.defer(pcall, hidePause, d) -- text is set after the label is parented
+    if d:IsA("TextLabel") then d:GetPropertyChangedSignal("Text"):Connect(function() pcall(hidePause, d) end) end
 end)
 for _, parent in ipairs({ game:GetService("CoreGui"), lp:FindFirstChildOfClass("PlayerGui") }) do
     local old = parent and parent:FindFirstChild("_CoinTest")
