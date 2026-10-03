@@ -97,19 +97,19 @@ local function run()
         return "harvested (" .. name .. ") but no Grab prompt appeared"
     end
 
-    -- nothing matched: report what prompts exist so the matcher can be fixed
-    local names, n = {}, 0
+    -- nothing matched: send every prompt's path to the bridge so the matcher can be fixed
+    local list = {}
     for _, d in ipairs(workspace:GetDescendants()) do
         if d:IsA("ProximityPrompt") then
-            n += 1
-            names[d.Name .. "@" .. d.Parent.Name] = true
+            list[#list + 1] = ("%s [%s/%s] %s"):format(d.Name, d.ActionText, d.ObjectText, d:GetFullName())
         end
     end
-    local list = {}
-    for k in pairs(names) do list[#list + 1] = k end
-    table.sort(list)
-    warn("[trio] prompts seen:", table.concat(list, ", "))
-    return ("no trio found (%d prompts, see output)"):format(n)
+    pcall(function()
+        local req = (syn and syn.request) or (http and http.request) or request or http_request
+        req({ Url = "http://127.0.0.1:7821", Method = "POST", Headers = { ["Content-Type"] = "application/json" },
+              Body = game:GetService("HttpService"):JSONEncode({ kind = "remote", name = "PROMPTS", path = "trio", remote_type = "dump", args = list }) })
+    end)
+    return ("no trio found (%d prompts, sent to bridge)"):format(#list)
 end
 
 -- ── GUI ───────────────────────────────────────────────────────────────────────
