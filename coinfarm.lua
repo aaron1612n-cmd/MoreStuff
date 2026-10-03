@@ -19,6 +19,7 @@ local KINDS = {
     },
     puffball = {
         word = "puff",
+        spawnMarker = "puffspawn",
         isPrompt = function(d)
             if d.Name == "Grab" then return false end
             local txt = (d.ActionText .. d.ObjectText):lower()
@@ -101,8 +102,27 @@ end
 
 local function run(kind)
     if not root() then return "no character" end
+    local diag = ""
 
     local cp, cpart = nearest(kind.isPrompt)
+
+    -- nothing loaded: if StreamingEnabled, ask the server to stream around known spawn markers, then look again
+    if not cp and workspace.StreamingEnabled and kind.spawnMarker then
+        local spots = {}
+        for _, d in ipairs(workspace:GetDescendants()) do
+            if d:IsA("BasePart") and d.Name:lower():find(kind.spawnMarker, 1, true) then spots[#spots + 1] = d.Position end
+        end
+        for i, pos in ipairs(spots) do
+            pcall(function() lp:RequestStreamAroundAsync(pos, 4) end)
+            cp, cpart = nearest(kind.isPrompt)
+            if cp then break end
+            if i >= 25 then break end
+        end
+        if not cp then
+            diag = ("streaming=true, %d '%s' markers loaded"):format(#spots, kind.spawnMarker)
+        end
+    end
+
     if not cp then
         local seen = {}
         for _, d in ipairs(workspace:GetDescendants()) do
@@ -111,7 +131,7 @@ local function run(kind)
             end
         end
         warn("[coinfarm] prompts seen:", table.concat(seen, " ; "))
-        return ("no %s prompt enabled (%d seen)"):format(kind.word, #seen)
+        return ("no %s prompt enabled (%d seen) %s"):format(kind.word, #seen, diag)
     end
 
     local at = cpart.Position
