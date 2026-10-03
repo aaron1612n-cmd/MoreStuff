@@ -4,7 +4,7 @@
   Only boxes owned by you are grabbed. Prompts are made instant (HoldDuration 0).
 --]]
 
-local VERSION = 14 -- bump on every update
+local VERSION = 15 -- bump on every update
 local STEP, MAX_CELLS = 300, 80 -- stream-sweep grid spacing (studs) and max cells per click
 
 local Players = game:GetService("Players")
@@ -53,6 +53,28 @@ end)
 -- "Gameplay Paused": stop it at the source (StreamingPauseMode), and also hide the overlay if it still shows
 pcall(function() workspace.StreamingPauseMode = Enum.StreamingPauseMode.Disabled end)
 pcall(function() sethiddenproperty(workspace, "StreamingPauseMode", Enum.StreamingPauseMode.Disabled) end)
+
+-- diagnostics to the bridge: did the pause-mode write stick, and what blur/pause UI exists right now
+task.spawn(function()
+    task.wait(2)
+    local info = {}
+    local ok1, v1 = pcall(function() return workspace.StreamingPauseMode end)
+    local ok2, v2 = pcall(function() return gethiddenproperty(workspace, "StreamingPauseMode") end)
+    info[#info + 1] = ("StreamingEnabled=%s pauseMode(read)=%s pauseMode(hidden)=%s"):format(tostring(workspace.StreamingEnabled), ok1 and tostring(v1) or "unreadable", ok2 and tostring(v2) or "unreadable")
+    for _, root in ipairs({ game:GetService("Lighting"), workspace.CurrentCamera }) do
+        for _, d in ipairs(root:GetDescendants()) do
+            if d:IsA("BlurEffect") or d:IsA("ColorCorrectionEffect") or d:IsA("DepthOfFieldEffect") then
+                info[#info + 1] = d.ClassName .. " " .. d:GetFullName() .. " enabled=" .. tostring(d.Enabled)
+            end
+        end
+    end
+    for _, g in ipairs(game:GetService("CoreGui"):GetChildren()) do info[#info + 1] = "CoreGui " .. g.Name end
+    pcall(function()
+        local req = (syn and syn.request) or (http and http.request) or request or http_request
+        req({ Url = "http://127.0.0.1:7821", Method = "POST", Headers = { ["Content-Type"] = "application/json" },
+              Body = game:GetService("HttpService"):JSONEncode({ kind = "remote", name = "DIAG", path = "coinfarm", remote_type = "diag", args = info }) })
+    end)
+end)
 
 local function matchPause(d)
     return (d:IsA("TextLabel") or d:IsA("TextButton")) and d.Text:lower():find("paused", 1, true) ~= nil
