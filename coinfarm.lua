@@ -4,7 +4,7 @@
   Only boxes owned by you are grabbed. Prompts are made instant (HoldDuration 0).
 --]]
 
-local VERSION = 11 -- bump on every update
+local VERSION = 12 -- bump on every update
 local STEP, MAX_CELLS = 300, 80 -- stream-sweep grid spacing (studs) and max cells per click
 
 local Players = game:GetService("Players")
@@ -42,10 +42,24 @@ local function tune(d)
     end
 end
 for _, d in ipairs(workspace:GetDescendants()) do tune(d) end
+-- hide Roblox's "Gameplay Paused" overlay (it lives in CoreGui; hide the whole panel that holds the text)
+local function hidePause(d)
+    if d:IsA("TextLabel") and d.Text:lower():find("gameplay paused", 1, true) then
+        local g = d
+        while g.Parent and not g.Parent:IsA("ScreenGui") do g = g.Parent end
+        if g:IsA("GuiObject") then g.Visible = false end
+    end
+end
+for _, d in ipairs(game:GetService("CoreGui"):GetDescendants()) do pcall(hidePause, d) end
+
 -- re-running replaces the previous copy: drop its prompt hook and buttons
 local genv = getgenv()
 if genv._coinTestConn then genv._coinTestConn:Disconnect() end
 genv._coinTestConn = workspace.DescendantAdded:Connect(tune)
+if genv._coinTestPauseConn then genv._coinTestPauseConn:Disconnect() end
+genv._coinTestPauseConn = game:GetService("CoreGui").DescendantAdded:Connect(function(d)
+    task.defer(pcall, hidePause, d) -- text is set after the label is parented
+end)
 for _, parent in ipairs({ game:GetService("CoreGui"), lp:FindFirstChildOfClass("PlayerGui") }) do
     local old = parent and parent:FindFirstChild("_CoinTest")
     if old then old:Destroy() end
