@@ -4,7 +4,7 @@
   Only boxes owned by you are grabbed. Prompts are made instant (HoldDuration 0).
 --]]
 
-local VERSION = 18 -- bump on every update
+local VERSION = 19 -- bump on every update
 local STEP, MAX_CELLS = 300, 12 -- stream-sweep grid spacing (studs) and cells per click (click again to continue)
 
 local Players = game:GetService("Players")
@@ -343,6 +343,11 @@ local function makeButton(y, idle, kind)
         busy = true
         local ok, res = pcall(kind.run or run, kind)
         btn.Text = ok and res or ("error: " .. tostring(res))
+        pcall(function() -- also send every result to the bridge so Claude can read it
+            local req = (syn and syn.request) or (http and http.request) or request or http_request
+            req({ Url = "http://127.0.0.1:7821", Method = "POST", Headers = { ["Content-Type"] = "application/json" },
+                  Body = game:GetService("HttpService"):JSONEncode({ kind = "remote", name = "RESULT", path = "v" .. VERSION, remote_type = "result", args = { btn.Text } }) })
+        end)
         warn("[coinfarm]", btn.Text)
         task.wait(3)
         btn.Text, busy = idle, false
