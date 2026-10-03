@@ -22,18 +22,24 @@ local KINDS = {
         isPrompt = function(d)
             if d.Name == "Grab" then return false end
             local txt = (d.ActionText .. d.ObjectText):lower()
+            local anc = d.Parent
+            while anc and anc ~= workspace do
+                if anc.Name:lower():find("puff", 1, true) then return true end
+                anc = anc.Parent
+            end
             return d.Parent:FindFirstChildOfClass("ParticleEmitter") ~= nil
                 or txt:find("puff", 1, true) ~= nil or txt:find("harvest", 1, true) ~= nil
         end,
     },
 }
 
-for _, d in ipairs(workspace:GetDescendants()) do
-    if d:IsA("ProximityPrompt") then d.HoldDuration = 0 end
+local function tune(d)
+    if d:IsA("ProximityPrompt") then
+        d.HoldDuration, d.MaxActivationDistance, d.RequiresLineOfSight = 0, 1e9, false
+    end
 end
-workspace.DescendantAdded:Connect(function(d)
-    if d:IsA("ProximityPrompt") then d.HoldDuration = 0 end
-end)
+for _, d in ipairs(workspace:GetDescendants()) do tune(d) end
+workspace.DescendantAdded:Connect(tune)
 
 local function root()
     return lp.Character and lp.Character:FindFirstChild("HumanoidRootPart")
@@ -103,14 +109,21 @@ local function run(kind)
 
     local at = cpart.Position
     local label = cp.ActionText
+
+    -- snapshot existing Grab prompts so the box this opens is the one that is new
+    local before = {}
+    for _, d in ipairs(workspace:GetDescendants()) do
+        if d:IsA("ProximityPrompt") and d.Name == "Grab" then before[d] = true end
+    end
     fire(cp, cpart)
 
-    -- opening drops a box; wait for its Grab prompt (owned by me, near the spot)
     local t0 = os.clock()
-    while os.clock() - t0 < 4 do
+    while os.clock() - t0 < 6 do
         task.wait(0.2)
-        local gp, gpart = nearest(myBoxGrab(kind.word))
-        if gp and (gpart.Position - at).Magnitude < 60 then
+        local gp, gpart = nearest(function(d)
+            return d.Name == "Grab" and not before[d] and (partOf(d).Position - at).Magnitude < 80
+        end)
+        if gp then
             fire(gp, gpart)
             return "opened " .. label .. " + grabbed it"
         end
