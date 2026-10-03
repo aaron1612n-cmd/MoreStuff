@@ -1,12 +1,17 @@
 --[[
-  Chest test button (one shot): tp to the nearest Chest / InfectedChest and grab it.
-  Prompts are made instant (HoldDuration 0). Button text shows what happened.
+  Chest test button (one shot):
+    tp to the nearest world Chest / Infected Chest prompt, open it, then grab the box it drops.
+  Only boxes owned by you are grabbed. Prompts are made instant (HoldDuration 0).
 --]]
 
 local Players = game:GetService("Players")
 local lp      = Players.LocalPlayer
 
-local WANT = { chest = true, infectedchest = true }
+-- world chests are plain ProximityPrompts (e.g. Workspace.Resources.CrashedFreighter.Box) with ActionText "Chest"
+local function isChestPrompt(d)
+    local a = d.ActionText:lower()
+    return d.Name ~= "Grab" and (a == "chest" or a == "infected chest")
+end
 
 for _, d in ipairs(workspace:GetDescendants()) do
     if d:IsA("ProximityPrompt") then d.HoldDuration = 0 end
@@ -15,22 +20,8 @@ workspace.DescendantAdded:Connect(function(d)
     if d:IsA("ProximityPrompt") then d.HoldDuration = 0 end
 end)
 
--- chest type of a box: its Info label text, else any ancestor below Workspace named for it
-local function chestType(prompt)
-    local box = prompt.Parent
-    local info = box and box:FindFirstChild("Info")
-    if info then
-        for _, l in ipairs(info:GetDescendants()) do
-            if l:IsA("TextLabel") then
-                local txt = l.Text:lower():gsub("%s", "")
-                for k in pairs(WANT) do if txt:find(k, 1, true) then return k end end
-            end
-        end
-    end
-    while box and box ~= workspace do
-        if WANT[box.Name:lower()] then return box.Name:lower() end
-        box = box.Parent
-    end
+local function root()
+    return lp.Character and lp.Character:FindFirstChild("HumanoidRootPart")
 end
 
 local function partOf(prompt)
@@ -39,49 +30,75 @@ local function partOf(prompt)
     return p:FindFirstChildWhichIsA("BasePart", true)
 end
 
+-- Info label text of a box: { "CHEST", "5 Kg", "OwnerName" }
+local function infoTexts(box)
+    local out = {}
+    local info = box:FindFirstChild("Info")
+    if info then
+        for _, l in ipairs(info:GetDescendants()) do
+            if l:IsA("TextLabel") then out[#out + 1] = l.Text end
+        end
+    end
+    return out
+end
+
+-- nearest enabled prompt satisfying pred(prompt); returns prompt, part
+local function nearest(pred)
+    local hrp = root()
+    local best, bestPart, bestDist = nil, nil, math.huge
+    for _, d in ipairs(workspace:GetDescendants()) do
+        if d:IsA("ProximityPrompt") and d.Enabled and pred(d) then
+            local part = partOf(d)
+            local dist = part and (part.Position - hrp.Position).Magnitude
+            if dist and dist < bestDist then best, bestPart, bestDist = d, part, dist end
+        end
+    end
+    return best, bestPart
+end
+
+local function fire(prompt, part)
+    root().CFrame = part.CFrame * CFrame.new(0, 3, 0)
+    task.wait(0.15)
+    fireproximityprompt(prompt)
+end
+
+-- a Grab prompt on a chest box that belongs to me
+local function myChestGrab(d)
+    if d.Name ~= "Grab" then return false end
+    local t = infoTexts(d.Parent)
+    return (t[1] or ""):lower():find("chest", 1, true) ~= nil and t[3] == lp.Name
+end
+
 local function run()
-    local hrp = lp.Character and lp.Character:FindFirstChild("HumanoidRootPart")
-    if not hrp then return "no character" end
+    if not root() then return "no character" end
 
-    local best, bestPart, bestDist, kind = nil, nil, math.huge, nil
-    for _, d in ipairs(workspace:GetDescendants()) do
-        if d:IsA("ProximityPrompt") and d.Name == "Grab" and d.Enabled then
-            local t = chestType(d)
-            local part = t and partOf(d)
-            if part then
-                local dist = (part.Position - hrp.Position).Magnitude
-                if dist < bestDist then best, bestPart, bestDist, kind = d, part, dist, t end
+    local cp, cpart = nearest(isChestPrompt)
+    if not cp then
+        local seen = {}
+        for _, d in ipairs(workspace:GetDescendants()) do
+            if d:IsA("ProximityPrompt") and d.ActionText:lower():find("chest", 1, true) then
+                seen[#seen + 1] = d:GetFullName() .. " [" .. d.ActionText .. "] enabled=" .. tostring(d.Enabled)
             end
         end
+        warn("[chest] chest prompts seen:", table.concat(seen, " ; "))
+        return ("no chest prompt enabled (%d chest-ish prompts seen)"):format(#seen)
     end
 
-    if best then
-        hrp.CFrame = bestPart.CFrame * CFrame.new(0, 3, 0)
-        task.wait(0.15)
-        fireproximityprompt(best)
-        return "grabbed " .. kind .. ": " .. best.Parent:GetFullName()
-    end
+    local at = cpart.Position
+    local label = cp.ActionText
+    fire(cp, cpart)
 
-    -- nothing matched: send every Grab prompt (and its Info text) to the bridge so the matcher can be fixed
-    local list = {}
-    for _, d in ipairs(workspace:GetDescendants()) do
-        if d:IsA("ProximityPrompt") and d.Name == "Grab" then
-            local texts = {}
-            local info = d.Parent:FindFirstChild("Info")
-            if info then
-                for _, l in ipairs(info:GetDescendants()) do
-                    if l:IsA("TextLabel") then texts[#texts + 1] = l.Text end
-                end
-            end
-            list[#list + 1] = d:GetFullName() .. " | info: " .. table.concat(texts, " / ")
+    -- opening drops a box; wait for its Grab prompt (owned by me, near the chest)
+    local t0 = os.clock()
+    while os.clock() - t0 < 4 do
+        task.wait(0.2)
+        local gp, gpart = nearest(myChestGrab)
+        if gp and (gpart.Position - at).Magnitude < 60 then
+            fire(gp, gpart)
+            return "opened " .. label .. " + grabbed it"
         end
     end
-    pcall(function()
-        local req = (syn and syn.request) or (http and http.request) or request or http_request
-        req({ Url = "http://127.0.0.1:7821", Method = "POST", Headers = { ["Content-Type"] = "application/json" },
-              Body = game:GetService("HttpService"):JSONEncode({ kind = "remote", name = "PROMPTS", path = "chest", remote_type = "dump", args = list }) })
-    end)
-    return ("no chest found (%d Grab prompts, sent to bridge)"):format(#list)
+    return "opened " .. label .. " but no Grab prompt of mine appeared"
 end
 
 -- ── GUI ───────────────────────────────────────────────────────────────────────
@@ -98,7 +115,7 @@ btn.TextWrapped = true
 btn.Parent = screen
 Instance.new("UICorner", btn).CornerRadius = UDim.new(0, 5)
 
-local IDLE, busy = "CHEST: TP + GRAB NEAREST", false
+local IDLE, busy = "CHEST: TP + OPEN + GRAB", false
 btn.Text = IDLE
 btn.MouseButton1Click:Connect(function()
     if busy then return end
