@@ -74,7 +74,7 @@ TOOLS = [
     },
     {
         "name": "get_object_tree",
-        "description": "Roblox game object tree from DarkDex.",
+        "description": "Roblox game object tree from the in-script tree walker.",
         "inputSchema": {"type": "object", "properties": {}},
     },
     {

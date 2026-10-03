@@ -8,19 +8,23 @@
 local BRIDGE = "http://127.0.0.1:7821"
 local HS     = game:GetService("HttpService")
 local UIS    = game:GetService("UserInputService")
-local lp     = game:GetService("Players").LocalPlayer
+local Players = game:GetService("Players")
+if not Players.LocalPlayer then Players:GetPropertyChangedSignal("LocalPlayer"):Wait() end
+local lp     = Players.LocalPlayer
 
 local bridgeActive = false
 
 -- ── HTTP POST ─────────────────────────────────────────────────────────────────
 local function post(payload)
-    local ok = pcall(function()
+    local ok, res = pcall(function()
         local body = HS:JSONEncode(payload)
         local req = (syn and syn.request) or (http and http.request) or request or http_request
-        req({ Url=BRIDGE, Method="POST", Body=body,
-              Headers={["Content-Type"]="application/json"} })
+        return req({ Url=BRIDGE, Method="POST", Body=body,
+                     Headers={["Content-Type"]="application/json"} })
     end)
-    if ok then bridgeActive = true end
+    -- a refused connection can return a failed table instead of throwing
+    ok = ok and type(res) == "table" and (res.Success == true or res.StatusCode == 200)
+    bridgeActive = ok
     return ok
 end
 
@@ -43,7 +47,10 @@ local SERVICES = {
 local MAX_DEPTH = 4
 local MAX_CHILDREN = 80
 
+local visited = 0
 local function walkNode(inst, depth)
+    visited += 1
+    if visited % 200 == 0 then task.wait() end -- yield so a big walk doesn't hitch a frame
     local node = { name=inst.Name, class=inst.ClassName }
     if depth < MAX_DEPTH then
         local children = inst:GetChildren()
@@ -64,6 +71,7 @@ local function walkNode(inst, depth)
 end
 
 local function sendTree()
+    visited = 0
     local tree = {}
     for _, svcName in ipairs(SERVICES) do
         local ok, svc = pcall(function() return game:GetService(svcName) end)
@@ -92,35 +100,36 @@ task.spawn(function()
     if not fn then warn("[MCP] SimpleSpy:", err); return end
     pcall(fn)
 
+    -- SimpleSpy logs every FireServer/InvokeServer through the global newRemote()
+    local genv = getgenv()
     for _ = 1, 20 do
         task.wait(0.5)
-        if type(_G.SimpleSpy) == "table" then break end
+        if type(genv.newRemote) == "function" then break end
     end
-    if type(_G.SimpleSpy) ~= "table" then
-        warn("[MCP] SimpleSpy hook table not found"); return
+    if type(genv.newRemote) ~= "function" then
+        warn("[MCP] SimpleSpy newRemote not found (executor missing hookfunction/getrawmetatable/setreadonly?)"); return
     end
 
-    for _, k in ipairs({ "Hook", "OnRemote", "Callback", "Fire" }) do
-        if type(_G.SimpleSpy[k]) == "function" then
-            local orig = _G.SimpleSpy[k]
-            _G.SimpleSpy[k] = function(remote, method, args, ...)
-                task.spawn(function()
-                    local name, path = "?", "?"
-                    pcall(function() name = tostring(remote.Name) end)
-                    pcall(function() path = remote:GetFullName() end)
-                    post({ kind="remote", name=name, path=path, remote_type=tostring(method) })
-                end)
-                return orig(remote, method, args, ...)
-            end
-            break
-        end
+    local orig = genv.newRemote
+    local lastSent = {}
+    genv.newRemote = function(kind, name, args, remote, ...)
+        task.spawn(function()
+            local path = "?"
+            pcall(function() path = remote:GetFullName() end)
+            local now = os.clock()
+            -- throttle spammy remotes to one post per path per 0.5s
+            if lastSent[path] and now - lastSent[path] < 0.5 then return end
+            lastSent[path] = now
+            post({ kind="remote", name=tostring(name), path=path, remote_type=tostring(kind) })
+        end)
+        return orig(kind, name, args, remote, ...)
     end
 end)
 
 -- ── Probe loop ────────────────────────────────────────────────────────────────
 task.spawn(function()
     while true do
-        if not post({ kind="ping" }) then bridgeActive = false end
+        post({ kind="ping" })
         task.wait(4)
     end
 end)
