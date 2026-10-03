@@ -1,6 +1,6 @@
 --[[
-  Test button: finds the nearest Chest / InfectedChest / Puffball box in Workspace and grabs it once.
-  Label shows what it found, or why not.
+  Trio farm toggle: repeatedly grabs the nearest Chest / InfectedChest / Puffball box in Workspace.
+  Delivery is not automated yet. Output window shows what it grabbed, or why not.
 --]]
 
 local Players = game:GetService("Players")
@@ -57,17 +57,23 @@ local btn = Instance.new("TextButton")
 btn.Size, btn.Position = UDim2.new(0, 260, 0, 36), UDim2.new(0, 12, 0, 60)
 btn.BackgroundColor3, btn.BorderSizePixel = Color3.fromRGB(14, 14, 18), 0
 btn.TextColor3, btn.TextSize, btn.Font = Color3.fromRGB(220, 220, 230), 12, Enum.Font.Code
-btn.Text = "GRAB NEAREST BOX"
 btn.Parent = screen
 Instance.new("UICorner", btn).CornerRadius = UDim.new(0, 5)
 
-local busy = false
+local farming = false
+local function render() btn.Text = "FARM TRIO: " .. (farming and "ON" or "OFF") end
+render()
+
 btn.MouseButton1Click:Connect(function()
-    if busy then return end
-    busy = true
-    local ok, res = pcall(grabNearest)
-    btn.Text = ok and res or ("error: " .. tostring(res))
-    warn("[coinfarm]", btn.Text)
-    task.wait(2)
-    btn.Text, busy = "GRAB NEAREST BOX", false
+    farming = not farming
+    render()
+    if not farming then return end
+    task.spawn(function()
+        while farming do
+            local ok, res = pcall(grabNearest)
+            if not ok then res = "error: " .. tostring(res) end
+            warn("[coinfarm]", res)
+            task.wait(1)
+        end
+    end)
 end)
