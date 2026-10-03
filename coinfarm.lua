@@ -4,7 +4,7 @@
   Only boxes owned by you are grabbed. Prompts are made instant (HoldDuration 0).
 --]]
 
-local VERSION = 17 -- bump on every update
+local VERSION = 18 -- bump on every update
 local STEP, MAX_CELLS = 300, 12 -- stream-sweep grid spacing (studs) and cells per click (click again to continue)
 
 local Players = game:GetService("Players")
@@ -259,6 +259,69 @@ local function run(kind)
     return "opened " .. label .. " but no matching Grab appeared (my boxes: " .. #mine .. ", see output)"
 end
 
+-- ── Trade: buy an aluminium package at Huffencrag, sell it at Peltsden ────────
+-- positions come from townrecon.lua (BellRing = buy prompt part, BoxSpawn = where the package appears, Sell = sell part)
+local HUFF = { bell = Vector3.new(-11049, 730, -1960), spawn = Vector3.new(-11045, 730, -1947) }
+local PELT = { sell = Vector3.new(10831, 1311, -121) }
+
+local function streamTo(pos)
+    pcall(function() lp:RequestStreamAroundAsync(pos, 3) end)
+end
+
+local function station(town, part)
+    local t = workspace:FindFirstChild(town)
+    local ds = t and t:FindFirstChild("DeliveryStation")
+    return ds and ds:FindFirstChild(part)
+end
+
+local function coins()
+    local ls = lp:FindFirstChild("leaderstats")
+    local c = ls and ls:FindFirstChild("coins")
+    return c and c.Value or 0
+end
+
+local function trade()
+    if not root() then return "no character" end
+
+    streamTo(HUFF.bell)
+    local bell = station("Huffencrag", "BellRing")
+    local prompt = bell and bell:FindFirstChildOfClass("ProximityPrompt")
+    if not prompt then return "Huffencrag bell not loaded" end
+
+    local c0 = coins()
+    local before = {}
+    for d in pairs(prompts) do if d.Name == "Grab" then before[d] = true end end
+
+    fire(prompt, bell)
+
+    -- the package shows up near BoxSpawn with a Grab prompt
+    local gp, gpart
+    local t0 = os.clock()
+    while os.clock() - t0 < 6 and not gp do
+        task.wait(0.2)
+        gp, gpart = nearest(function(d)
+            local part = d.Name == "Grab" and not before[d] and partOf(d)
+            return part and (part.Position - HUFF.spawn).Magnitude < 60
+        end)
+    end
+    if not gp then return ("bought? coins %d -> %d, but no package Grab appeared"):format(c0, coins()) end
+    local paid = c0 - coins()
+    fire(gp, gpart)
+    task.wait(0.3)
+
+    -- carry it to Peltsden and stand on the sell part so the held box touches it
+    streamTo(PELT.sell)
+    local sell = station("Peltsden", "Sell")
+    local target = sell and (sell.CFrame * CFrame.new(0, 3, 0)) or CFrame.new(PELT.sell + Vector3.new(0, 3, 0))
+    local c1 = coins()
+    root().CFrame = target
+    for _ = 1, 10 do
+        task.wait(0.3)
+        if coins() > c1 then break end
+    end
+    return ("paid %d, sold for %d (coins %d)"):format(paid, coins() - c1, coins())
+end
+
 -- ── GUI ───────────────────────────────────────────────────────────────────────
 local screen = Instance.new("ScreenGui")
 screen.Name, screen.ResetOnSpawn, screen.DisplayOrder = "_CoinTest", false, 9999
@@ -278,7 +341,7 @@ local function makeButton(y, idle, kind)
     btn.MouseButton1Click:Connect(function()
         if busy then return end
         busy = true
-        local ok, res = pcall(run, kind)
+        local ok, res = pcall(kind.run or run, kind)
         btn.Text = ok and res or ("error: " .. tostring(res))
         warn("[coinfarm]", btn.Text)
         task.wait(3)
@@ -288,3 +351,4 @@ end
 
 makeButton(60,  "v" .. VERSION .. "  CHEST: TP + OPEN + GRAB",    KINDS.chest)
 makeButton(102, "v" .. VERSION .. "  PUFFBALL: TP + HARVEST + GRAB", KINDS.puffball)
+makeButton(144, "v" .. VERSION .. "  TRADE: ALUMINIUM HUFFENCRAG > PELTSDEN", { run = trade })
